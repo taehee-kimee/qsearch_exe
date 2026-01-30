@@ -1,8 +1,9 @@
 # Build and Release Script for QuizHelper
 
-$version = "1.0.2"
-$releaseDir = "..\QuizHelper\Releases"
-$projectDir = "..\QuizHelper"
+$version = "1.0.5"
+$scriptDir = $PSScriptRoot
+$projectDir = Join-Path $scriptDir "..\QuizHelper"
+$releaseDir = Join-Path $scriptDir "..\QuizHelper\Releases"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  QuizHelper Release Builder v$version" -ForegroundColor Cyan
