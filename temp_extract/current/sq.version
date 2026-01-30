@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+<metadata>
+<id>QuizHelper</id>
+<title>QuizHelper</title>
+<description>QuizHelper</description>
+<authors>QuizHelper</authors>
+<version>1.0.5</version>
+<channel>win</channel>
+<mainExe>QuizHelper.exe</mainExe>
+<os>win</os>
+<rid>win</rid>
+<shortcutLocations>Desktop,StartMenuRoot</shortcutLocations>
+<shortcutAmuid>velopack.QuizHelper</shortcutAmuid>
+</metadata>
+</package>
