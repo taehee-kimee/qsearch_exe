@@ -9,6 +9,29 @@ using QuizHelper.Models;
 
 namespace QuizHelper.Services
 {
+    /// <summary>
+    /// OCR 화면 타입 분류
+    /// </summary>
+    public enum ScreenType
+    {
+        Question,       // 문제 화면 - DB 매칭 필요
+        Answer,         // 정답 화면 - 정답 직접 추출
+        SystemMessage,  // 시스템 메시지 - 무시
+        AntiMacro,      // 매크로 방지 화면 - 무시
+        Unknown         // 알 수 없음
+    }
+
+    /// <summary>
+    /// 화면 분류 결과
+    /// </summary>
+    public class ScreenClassification
+    {
+        public ScreenType Type { get; set; }
+        public string? ExtractedAnswer { get; set; }  // 정답 화면일 때 추출된 정답
+        public int? AnswerLength { get; set; }        // 글자수 힌트 (있는 경우)
+        public string CleanedText { get; set; } = string.Empty;  // 전처리된 텍스트
+    }
+
     public class CsvDataService
     {
         private readonly List<QuizEntry> _entries = new();
@@ -218,27 +241,83 @@ namespace QuizHelper.Services
             if (string.IsNullOrWhiteSpace(ocrText) || _entries.Count == 0)
                 return null;
 
-            // Normalize the OCR text
-            string normalizedOcr = NormalizeText(ocrText);
-            
-            // Extract choices (1.xxx 2.xxx 3.xxx 4.xxx) from OCR text
-            var choices = ExtractChoices(ocrText);
-            
-            // Log the normalized OCR text
+            // === 1단계: 화면 분류 및 전처리 ===
+            var classification = ClassifyScreen(ocrText);
+
             Log("");
             Log("=== OCR 매칭 시작 ===");
             Log($"원본 OCR: {ocrText.Replace("\r\n", " ").Replace("\n", " ")}");
+            Log($"화면 타입: {classification.Type}");
+
+            // 시스템 메시지나 매크로 방지 화면은 무시
+            if (classification.Type == ScreenType.SystemMessage)
+            {
+                Log("[SKIP] 시스템 메시지 - 매칭 불필요");
+                return null;
+            }
+
+            if (classification.Type == ScreenType.AntiMacro)
+            {
+                Log("[SKIP] 매크로 방지 화면 - 매칭 불가");
+                return null;
+            }
+
+            // 정답 화면인 경우: 정답 직접 반환 (DB에서 역조회)
+            if (classification.Type == ScreenType.Answer && !string.IsNullOrEmpty(classification.ExtractedAnswer))
+            {
+                Log($"[ANSWER] 정답 화면 감지 - 추출된 정답: {classification.ExtractedAnswer}");
+
+                // DB에서 해당 정답을 가진 질문 찾기 (학습/확인 용도)
+                var matchedEntry = _entries.Find(e =>
+                    NormalizeText(e.Answer).Equals(NormalizeText(classification.ExtractedAnswer), StringComparison.OrdinalIgnoreCase));
+
+                return new MatchResult
+                {
+                    Question = matchedEntry?.Question ?? "(정답 화면에서 추출)",
+                    Answer = classification.ExtractedAnswer,
+                    Category = matchedEntry?.Category ?? "answer_screen",
+                    Score = 100
+                };
+            }
+
+            // === 2단계: 문제 화면 처리 ===
+            // 전처리된 텍스트 사용 (포맷 텍스트 제거됨)
+            string cleanedText = !string.IsNullOrEmpty(classification.CleanedText)
+                ? classification.CleanedText
+                : ocrText;
+
+            string normalizedOcr = NormalizeText(cleanedText);
+            int? answerLengthHint = classification.AnswerLength;
+
+            Log($"전처리된 텍스트: {cleanedText}");
             Log($"정규화된 OCR: {normalizedOcr}");
+            if (answerLengthHint.HasValue)
+            {
+                Log($"글자수 힌트: {answerLengthHint}글자");
+            }
+
+            // Extract choices (1.xxx 2.xxx 3.xxx 4.xxx) from OCR text
+            var choices = ExtractChoices(ocrText);
             if (choices.Count > 0)
             {
                 Log($"추출된 보기: {string.Join(" | ", choices)}");
             }
 
+            // === 3단계: 매칭 후보 검색 ===
             // Store top candidates for debugging (QLen for tie-breaking)
             var topCandidates = new List<(string Question, string Answer, int Score, string MatchType, int QLen)>();
 
             foreach (var entry in _entries)
             {
+                // 글자수 힌트가 있으면 정답 길이로 필터링 (성능 및 정확도 향상)
+                if (answerLengthHint.HasValue)
+                {
+                    int answerLen = entry.Answer.Replace(" ", "").Length;
+                    // 허용 오차: ±1 글자 (OCR 오인식 고려)
+                    if (Math.Abs(answerLen - answerLengthHint.Value) > 1)
+                        continue;
+                }
+
                 string normalizedQuestion = NormalizeText(entry.Question);
                 string normalizedAnswer = NormalizeText(entry.Answer);
 
@@ -443,6 +522,206 @@ namespace QuizHelper.Services
         {
             if (string.IsNullOrEmpty(text)) return text;
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+        }
+
+        /// <summary>
+        /// OCR 텍스트의 화면 타입 분류 및 전처리
+        /// </summary>
+        public static ScreenClassification ClassifyScreen(string ocrText)
+        {
+            var result = new ScreenClassification { Type = ScreenType.Unknown };
+
+            if (string.IsNullOrWhiteSpace(ocrText))
+                return result;
+
+            string text = ocrText.Trim();
+
+            // 1. 시스템 메시지 감지 (우선순위 높음)
+            if (IsSystemMessage(text))
+            {
+                result.Type = ScreenType.SystemMessage;
+                return result;
+            }
+
+            // 2. 정답 화면 감지
+            string? extractedAnswer = TryExtractAnswer(text);
+            if (extractedAnswer != null)
+            {
+                result.Type = ScreenType.Answer;
+                result.ExtractedAnswer = extractedAnswer;
+                return result;
+            }
+
+            // 3. 매크로 방지 화면 감지 (OCR 품질 체크)
+            if (IsAntiMacroScreen(text))
+            {
+                result.Type = ScreenType.AntiMacro;
+                return result;
+            }
+
+            // 4. 문제 화면으로 판단
+            result.Type = ScreenType.Question;
+            result.AnswerLength = ExtractAnswerLength(text);
+            result.CleanedText = CleanQuestionText(text);
+
+            return result;
+        }
+
+        /// <summary>
+        /// 시스템 메시지 여부 확인
+        /// </summary>
+        private static bool IsSystemMessage(string text)
+        {
+            var systemPatterns = new[]
+            {
+                @"시상식",
+                @"상금으로.*원을",
+                @"경험치를.*만큼",
+                @"문제를\s*모두\s*풀었습니다",
+                @"다시\s*시작해\s*?주세요",
+                @"대단한\s*실력",
+                @"기쁜\s*소식",
+                @"재널\s*변경",
+                @"방정보",
+                @"에\s*관한\s*문제입니다\.?\s*$",  // "<문제 N> "xxx"에 관한 문제입니다." 형태
+            };
+
+            foreach (var pattern in systemPatterns)
+            {
+                if (System.Text.RegularExpressions.Regex.IsMatch(text, pattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 정답 화면에서 정답 추출 시도
+        /// </summary>
+        private static string? TryExtractAnswer(string text)
+        {
+            // 패턴: "[정 답] 정답은 XXX" 또는 "정답은 XXX 입니다"
+            var patterns = new[]
+            {
+                @"\[정\s*답\]\s*정답은\s+([^\s\[]+)",           // [정 답] 정답은 XXX
+                @"정답은\s+([가-힣a-zA-Z0-9]+)\s*(입니다|!|$)", // 정답은 XXX 입니다
+            };
+
+            foreach (var pattern in patterns)
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(text, pattern);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    string answer = match.Groups[1].Value.Trim();
+                    // 유효한 정답인지 확인 (2글자 이상, 특수문자 제외)
+                    if (answer.Length >= 2 && System.Text.RegularExpressions.Regex.IsMatch(answer, @"^[가-힣a-zA-Z0-9]+$"))
+                    {
+                        return answer;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// 매크로 방지 화면 감지 (OCR 품질 기반)
+        /// </summary>
+        private static bool IsAntiMacroScreen(string text)
+        {
+            // 1. "이미지에 적힌 글자" 패턴 감지
+            if (System.Text.RegularExpressions.Regex.IsMatch(text, @"이미.{0,3}에\s*적.{0,3}글자"))
+                return true;
+
+            // 2. OCR 품질 점수 계산
+            int totalChars = text.Length;
+            if (totalChars < 10) return false;
+
+            // 한글, 영문, 숫자, 공백만 카운트
+            int validChars = System.Text.RegularExpressions.Regex.Matches(text, @"[가-힣a-zA-Z0-9\s]").Count;
+            double validRatio = (double)validChars / totalChars;
+
+            // 의미없는 문자가 40% 이상이면 매크로 방지로 판단
+            if (validRatio < 0.6)
+                return true;
+
+            // 3. 깨진 한글 패턴 감지 (자음/모음만 연속)
+            int brokenKorean = System.Text.RegularExpressions.Regex.Matches(text, @"[ㄱ-ㅎㅏ-ㅣ]{2,}").Count;
+            if (brokenKorean >= 3)
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// OCR 텍스트에서 글자수 힌트 추출
+        /// </summary>
+        private static int? ExtractAnswerLength(string text)
+        {
+            // 패턴: (4글자), (3글자), 4글자, OOO(3개) 등
+            var patterns = new[]
+            {
+                @"\((\d+)\s*글자\)",     // (4글자)
+                @"(\d+)\s*글자",          // 4글자
+                @"O{2,}",                 // OOO -> 3글자
+                @"○{2,}",                 // ○○○ -> 3글자
+                @"0{2,}(?=라\s*한다)",    // 0000라 한다 -> 4글자
+            };
+
+            // 숫자로 명시된 경우
+            foreach (var pattern in patterns.Take(2))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(text, pattern);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    if (int.TryParse(match.Groups[1].Value, out int length) && length >= 2 && length <= 10)
+                        return length;
+                }
+            }
+
+            // O 또는 ○ 개수로 추정
+            var oMatch = System.Text.RegularExpressions.Regex.Match(text, @"[O○0]{2,}");
+            if (oMatch.Success && oMatch.Value.Length >= 2 && oMatch.Value.Length <= 10)
+                return oMatch.Value.Length;
+
+            return null;
+        }
+
+        /// <summary>
+        /// 문제 텍스트에서 포맷 텍스트 제거 (질문 핵심부만 추출)
+        /// </summary>
+        private static string CleanQuestionText(string text)
+        {
+            string result = text;
+
+            // 1. 출제자 정보 제거: "출제자 : XXX", "출제자: XXX"
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                @"출제자\s*[:：]\s*\S+\s*", "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // 2. 문제 마커 제거: [문제], [문제], <문제 N>
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                @"\[문제\]|\[문제\s*\]|<문제\s*\d*>", "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // 3. 글자수 힌트 제거: (4글자), (3글자)
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                @"\(\d+\s*글자\)", "");
+
+            // 4. 정답 형식 힌트 제거: (맞다 or 아니다)
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                @"\(맞다\s*(or|또는)\s*아니다\)", "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // 5. 카테고리 안내 제거: "xxx"에 관한 문제입니다
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                @"["""][^""]+[""]에\s*관한\s*문제입니다\.?", "");
+
+            // 6. 앞뒤 공백 및 연속 공백 정리
+            result = System.Text.RegularExpressions.Regex.Replace(result.Trim(), @"\s+", " ");
+
+            return result;
         }
 
         private static string NormalizeText(string text)
