@@ -1,0 +1,20 @@
+# Backup folder
+data/backup/
+
+# Build outputs
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+
+# Log files
+*.log
+match_log.txt
+
+# VS Code
+.vscode/
+
+# Rider
+.idea/

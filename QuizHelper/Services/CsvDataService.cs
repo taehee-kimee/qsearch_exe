@@ -99,15 +99,17 @@ namespace QuizHelper.Services
 
         /// <summary>
         /// Get list of available CSV categories (file names without extension)
+        /// Only includes CSV files in the root data folder (excludes subfolders like backup)
         /// </summary>
         public List<string> GetAvailableCategories()
         {
             var categories = new List<string>();
-            
+
             if (!Directory.Exists(_dataFolderPath))
                 return categories;
 
-            var csvFiles = Directory.GetFiles(_dataFolderPath, "*.csv", SearchOption.AllDirectories);
+            // TopDirectoryOnly: backup 등 하위 폴더 제외
+            var csvFiles = Directory.GetFiles(_dataFolderPath, "*.csv", SearchOption.TopDirectoryOnly);
             foreach (var file in csvFiles)
             {
                 categories.Add(Path.GetFileNameWithoutExtension(file));
@@ -735,8 +737,9 @@ namespace QuizHelper.Services
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             // 5. 카테고리 안내 제거: "xxx"에 관한 문제입니다
+            // Regex: "([^"]+)"에 관한 문제
             result = System.Text.RegularExpressions.Regex.Replace(result,
-                @"["""][^""]+[""]에\s*관한\s*문제입니다\.?", "");
+                "\"[^\"]+\"에\\s*관한\\s*문제입니다\\.?", "");
 
             // 6. 앞뒤 공백 및 연속 공백 정리
             result = System.Text.RegularExpressions.Regex.Replace(result.Trim(), @"\s+", " ");
