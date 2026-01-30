@@ -316,7 +316,15 @@ namespace QuizHelper.Services
 
             // === 3단계: 매칭 후보 검색 ===
             // Store top candidates for debugging (QLen for tie-breaking)
-            var topCandidates = new List<(string Question, string Answer, int Score, string MatchType, int QLen)>();
+            var topCandidates = new List<(string Question, string Answer, int Score, string MatchType, int QLen, string Category)>();
+            
+            // 성능 측정 시작
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int checkedCount = 0;
+            int skippedByPreFilter = 0;
+            
+            // 키워드는 루프 밖에서 한 번만 추출 (성능 최적화)
+            var keywords = ExtractKeywords(normalizedOcr);
 
             foreach (var entry in _entries)
             {
@@ -332,8 +340,18 @@ namespace QuizHelper.Services
                 string normalizedQuestion = NormalizeText(entry.Question);
                 string normalizedAnswer = NormalizeText(entry.Answer);
 
-                // Method 1: Standard fuzzy matching on question
+                // === 최적화 1: Quick Pre-filtering ===
+                // 가장 빠른 PartialRatio만 먼저 계산, 40% 미만이면 스킵
                 int partialScore = Fuzz.PartialRatio(normalizedOcr, normalizedQuestion);
+                if (partialScore < 40)
+                {
+                    skippedByPreFilter++;
+                    continue;
+                }
+                
+                checkedCount++;
+
+                // 40% 이상만 상세 계산
                 int tokenScore = Fuzz.TokenSetRatio(normalizedOcr, normalizedQuestion);
                 int weightedScore = Fuzz.WeightedRatio(normalizedOcr, normalizedQuestion);
                 int fuzzyScore = Math.Max(Math.Max(partialScore, tokenScore), weightedScore);
@@ -349,6 +367,7 @@ namespace QuizHelper.Services
                     double penalty = Math.Min(0.5, (ratio - 5) * 0.05);  // 5배부터 시작, 15배에서 최대
                     fuzzyScore = (int)(fuzzyScore * (1 - penalty));
                 }
+                
                 // Method 2: Choice-based matching (if choices were extracted)
                 // 방향 A 변형: Fuzzy 점수에 따라 Choice 점수 결정
                 // - Fuzzy >= 60%: Choice는 보너스로만 사용 (+10점)
@@ -393,9 +412,8 @@ namespace QuizHelper.Services
                     }
                 }
                 
-                // Method 3: Keyword extraction matching
+                // Method 3: Keyword extraction matching (키워드는 이미 추출됨)
                 int keywordScore = 0;
-                var keywords = ExtractKeywords(normalizedOcr);
                 if (keywords.Count >= 2)
                 {
                     int matchedKeywords = 0;
@@ -418,12 +436,56 @@ namespace QuizHelper.Services
                 string matchType = finalScore == fuzzyScore ? "Fuzzy" : 
                                    finalScore == choiceScore ? "Choice" : "Keyword";
 
-                // Store candidates with score >= 50 for debugging (include question length for tie-breaking)
+                // === 최적화 2: Early Termination ===
+                // 100% 매칭이면 즉시 반환 (더 이상 검색 불필요)
+                if (finalScore >= 100)
+                {
+                    sw.Stop();
+                    Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms (Early Exit), 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
+                    Log($"[EARLY_EXIT] 완전 매칭 발견: {finalScore}% ({matchType})");
+                    Log($"  Q: {TruncateForLog(entry.Question, 50)} -> A: {entry.Answer}");
+                    
+                    return new MatchResult
+                    {
+                        Question = entry.Question,
+                        Answer = entry.Answer,
+                        Category = entry.Category,
+                        Score = finalScore
+                    };
+                }
+
+                // === 최적화 3: Top-10 후보만 유지 ===
                 if (finalScore >= 50)
                 {
-                    topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length));
+                    // 상위 10개만 유지
+                    if (topCandidates.Count < 10)
+                    {
+                        topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category));
+                    }
+                    else
+                    {
+                        // 현재 최저점보다 높으면 교체
+                        int minIdx = 0;
+                        int minScore = topCandidates[0].Score;
+                        for (int i = 1; i < topCandidates.Count; i++)
+                        {
+                            if (topCandidates[i].Score < minScore)
+                            {
+                                minScore = topCandidates[i].Score;
+                                minIdx = i;
+                            }
+                        }
+                        if (finalScore > minScore)
+                        {
+                            topCandidates[minIdx] = (entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category);
+                        }
+                    }
                 }
             }
+            
+            // 성능 측정 종료
+            sw.Stop();
+            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
             
             // Sort by score descending, then by question length similarity to OCR (closer = better)
             int ocrLength = normalizedOcr.Length;
@@ -465,12 +527,11 @@ namespace QuizHelper.Services
                                                   : $"{best.Score}% (차이 {scoreDiff}점)";
                     Log($"[SUCCESS] 매칭 성공: {reason} ({best.MatchType})");
 
-                    var matchedEntry = _entries.Find(e => e.Question == best.Question);
                     return new MatchResult
                     {
                         Question = best.Question,
                         Answer = best.Answer,
-                        Category = matchedEntry?.Category ?? "",
+                        Category = best.Category,
                         Score = best.Score
                     };
                 }
