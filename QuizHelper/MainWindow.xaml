@@ -37,7 +37,7 @@
 
         <!-- Header with Title and Close Button -->
         <Grid x:Name="HeaderPanel" Grid.Row="0" Margin="15,15,15,10">
-            <TextBlock Text="Quiz Helper"
+            <TextBlock Text="💸"
                        Foreground="White"
                        FontSize="16"
                        FontWeight="SemiBold"

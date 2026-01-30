@@ -630,6 +630,12 @@ namespace QuizHelper.Services
                 @"올라오는\s*정답",
                 @"주관식으로\s*문제를",
                 @"객관식으로\s*문제를",
+                
+                // 숫자 포함 대기 메시지 (매칭 리소스 낭비 방지)
+                @"현재\s*\d+\s*명으로.*게임",           // "현재 5명으로, 게임을..."
+                @"\d+\s*명이\s*더\s*들어와야",          // "1명이 더 들어와야..."
+                @"님이\s*선두입니다",                    // "xxx님이 선두입니다"
+                @"PLAYING|WAITING|CHANNEL",              // 게임 UI 텍스트
             };
 
             foreach (var pattern in systemPatterns)
@@ -781,6 +787,17 @@ namespace QuizHelper.Services
                 .Replace('|', 'l')     // 파이프 -> l
                 .Replace('`', '\'')   // 백틱 -> 작은따옴표
                 .Replace('~', '-');    // 물결 -> 하이픈
+            
+            // Step 1A: Fix number-related OCR errors (숫자 관련 OCR 오류 보정)
+            // 온도 표기 오류 수정
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)로C", "$1℃");     // 2로C -> 2℃
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)도C", "$1℃");     // 25도C -> 25℃
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)結C", "$1℃");     // 37結C -> 37℃
+            result = result.Replace("결C", "℃").Replace("도C", "℃");                               // 결C, 도C -> ℃
+            
+            // 흔한 단어 오인식 수정
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"입루출저빅", "입출력");  // 입출력 오인식
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"ß루출저빅", "입출력");   // 입출력 오인식 변형
             
             // Step 2: Remove special characters but keep Korean, English, numbers
             result = System.Text.RegularExpressions.Regex.Replace(result, @"[^\w\s가-힣ㄱ-ㅎㅏ-ㅣ]", " ");
