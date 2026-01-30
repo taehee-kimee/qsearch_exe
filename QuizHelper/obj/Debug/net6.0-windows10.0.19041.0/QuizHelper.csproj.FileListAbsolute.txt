@@ -32,3 +32,7 @@ C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\obj\Debug\net6.0-wi
 C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\Microsoft.Extensions.Logging.Abstractions.dll
 C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\NuGet.Versioning.dll
 C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\Velopack.dll
+C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\data\garosero.csv
+C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\data\kkong.csv
+C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\data\ollaolla.csv
+C:\Users\taehe\OneDrive\문서\GitHub\qsearch_exe\QuizHelper\bin\Debug\net6.0-windows10.0.19041.0\data\ox_xo.csv
