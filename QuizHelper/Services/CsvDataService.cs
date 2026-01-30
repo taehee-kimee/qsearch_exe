@@ -339,43 +339,45 @@ namespace QuizHelper.Services
                     fuzzyScore = (int)(fuzzyScore * (1 - penalty));
                 }
                 // Method 2: Choice-based matching (if choices were extracted)
+                // 방향 A 변형: Fuzzy 점수에 따라 Choice 점수 결정
+                // - Fuzzy >= 60%: Choice는 보너스로만 사용 (+10점)
+                // - Fuzzy < 60%: Choice 단독 허용하되 70점 상한
                 int choiceScore = 0;
                 if (choices.Count >= 2)
                 {
-                    // Check if any choice matches the answer
                     foreach (var choice in choices)
                     {
                         string normalizedChoice = NormalizeText(choice);
-                        
-                        // If a choice matches the answer, boost score significantly
                         int answerMatch = Fuzz.Ratio(normalizedChoice, normalizedAnswer);
+
                         if (answerMatch >= 80)
                         {
-                            // Also check if other choices appear in the question
+                            // 질문에 보기가 포함되어 있는지 확인
                             int questionContainsChoices = 0;
                             foreach (var c in choices)
                             {
                                 if (normalizedQuestion.Contains(NormalizeText(c)))
                                     questionContainsChoices++;
                             }
-                            
-                            // If question contains multiple choices and answer matches, high confidence
-                            if (questionContainsChoices >= 2)
+
+                            if (fuzzyScore >= 60)
                             {
-                                choiceScore = 95;
-                                break;
+                                // Fuzzy >= 60%: 보너스로만 사용
+                                if (questionContainsChoices >= 2)
+                                {
+                                    // 질문에 보기가 많이 포함되면 더 큰 보너스
+                                    choiceScore = Math.Max(choiceScore, fuzzyScore + 15);
+                                }
+                                else
+                                {
+                                    choiceScore = Math.Max(choiceScore, fuzzyScore + 10);
+                                }
                             }
-                            else if (answerMatch >= 90)
+                            else
                             {
-                                choiceScore = Math.Max(choiceScore, 85);
+                                // Fuzzy < 60%: Choice 단독 허용하되 70점 상한
+                                choiceScore = Math.Max(choiceScore, 70);
                             }
-                        }
-                        
-                        // Also try partial matching with question
-                        int choiceInQuestion = Fuzz.PartialRatio(normalizedChoice, normalizedQuestion);
-                        if (choiceInQuestion >= 90)
-                        {
-                            choiceScore = Math.Max(choiceScore, 70 + (choiceInQuestion - 90));
                         }
                     }
                 }
@@ -433,24 +435,42 @@ namespace QuizHelper.Services
                 Log($"  {i + 1}. [{candidate.Score}%][{candidate.MatchType}] Q: {TruncateForLog(candidate.Question, 40)} -> A: {candidate.Answer}");
             }
             
-            // Return best match if it meets minimum score
-            if (topCandidates.Count > 0 && topCandidates[0].Score >= minimumScore)
+            // === 4단계: 최종 판단 ===
+            // 방안 2: 점수 차이 기반 판단
+            // - 기준 점수(80%) 이상이면 반환
+            // - 또는 1위 >= 65% AND 1위-2위 차이 >= 15점이면 반환
+            if (topCandidates.Count > 0)
             {
                 var best = topCandidates[0];
-                Log($"[SUCCESS] 매칭 성공: {best.Score}% ({best.MatchType})");
-                
-                // Find the original entry to get category
-                var matchedEntry = _entries.Find(e => e.Question == best.Question);
-                return new MatchResult
+                int secondScore = topCandidates.Count > 1 ? topCandidates[1].Score : 0;
+                int scoreDiff = best.Score - secondScore;
+
+                bool meetsMinimum = best.Score >= minimumScore;
+                bool hasSignificantLead = best.Score >= 65 && scoreDiff >= 15;
+
+                if (meetsMinimum || hasSignificantLead)
                 {
-                    Question = best.Question,
-                    Answer = best.Answer,
-                    Category = matchedEntry?.Category ?? "",
-                    Score = best.Score
-                };
+                    string reason = meetsMinimum ? $"{best.Score}% >= {minimumScore}%"
+                                                  : $"{best.Score}% (차이 {scoreDiff}점)";
+                    Log($"[SUCCESS] 매칭 성공: {reason} ({best.MatchType})");
+
+                    var matchedEntry = _entries.Find(e => e.Question == best.Question);
+                    return new MatchResult
+                    {
+                        Question = best.Question,
+                        Answer = best.Answer,
+                        Category = matchedEntry?.Category ?? "",
+                        Score = best.Score
+                    };
+                }
+
+                Log($"[FAIL] 매칭 실패: 최고 점수 {best.Score}% (차이 {scoreDiff}점) - 기준 미달");
             }
-            
-            Log($"[FAIL] 매칭 실패: 최고 점수 {(topCandidates.Count > 0 ? topCandidates[0].Score : 0)}% < 기준 {minimumScore}%");
+            else
+            {
+                Log("[FAIL] 매칭 실패: 후보 없음");
+            }
+
             return null;
         }
         
