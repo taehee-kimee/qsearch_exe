@@ -3,7 +3,7 @@
 $version = "1.0.5"
 $scriptDir = $PSScriptRoot
 $projectDir = Join-Path $scriptDir "..\QuizHelper"
-$releaseDir = Join-Path $scriptDir "..\QuizHelper\Releases"
+$releaseDir = Join-Path $scriptDir "..\Releases"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  QuizHelper Release Builder v$version" -ForegroundColor Cyan
