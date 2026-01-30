@@ -7,6 +7,8 @@
     <UseWPF>true</UseWPF>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <!-- 커스텀 Main 메서드 사용 (자동 생성 비활성화) -->
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
   </PropertyGroup>
 
   <!-- Release 빌드 최적화 설정 -->
@@ -32,6 +34,13 @@
     <None Update="data\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+  </ItemGroup>
+
+  <!-- App.xaml을 수동으로 ApplicationDefinition으로 지정 -->
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </ApplicationDefinition>
   </ItemGroup>
 
 </Project>
