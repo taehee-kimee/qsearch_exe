@@ -735,8 +735,9 @@ namespace QuizHelper.Services
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             // 5. 카테고리 안내 제거: "xxx"에 관한 문제입니다
+            // Regex: "([^"]+)"에 관한 문제
             result = System.Text.RegularExpressions.Regex.Replace(result,
-                @"["""][^""]+[""]에\s*관한\s*문제입니다\.?", "");
+                "\"[^\"]+\"에\\s*관한\\s*문제입니다\\.?", "");
 
             // 6. 앞뒤 공백 및 연속 공백 정리
             result = System.Text.RegularExpressions.Regex.Replace(result.Trim(), @"\s+", " ");

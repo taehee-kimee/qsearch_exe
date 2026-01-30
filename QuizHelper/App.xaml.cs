@@ -22,7 +22,7 @@ namespace QuizHelper
             {
                 // TODO: 실제 배포할 때 아래 URL을 본인의 웹사이트 주소로 변경하세요.
                 // 예: "https://mysite.com/downloads/" 또는 GitHub Releases URL
-                string updateUrl = "https://example.com/downloads/"; 
+                string updateUrl = "https://qplay-search.vercel.app/"; 
 
                 var mgr = new Velopack.UpdateManager(updateUrl);
 
