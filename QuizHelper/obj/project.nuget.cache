@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dgSpecHash": "5XnUFhU503bMUBzs+WvAa5cFe4399sYi/lvd3mSYFRdXy93swwCl3tN+/OutiJ7Uq7ENw2zY1ADelpsSCdNOZA==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\taehe\\OneDrive\\문서\\GitHub\\qsearch_exe\\QuizHelper\\QuizHelper.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\taehe\\.nuget\\packages\\fuzzysharp\\2.0.2\\fuzzysharp.2.0.2.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\microsoft.extensions.logging.abstractions\\6.0.0\\microsoft.extensions.logging.abstractions.6.0.0.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\microsoft.win32.systemevents\\6.0.0\\microsoft.win32.systemevents.6.0.0.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\nuget.versioning\\6.12.1\\nuget.versioning.6.12.1.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\system.drawing.common\\6.0.0\\system.drawing.common.6.0.0.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\velopack\\0.0.942\\velopack.0.0.942.nupkg.sha512",
+    "C:\\Users\\taehe\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.19041.52\\microsoft.windows.sdk.net.ref.10.0.19041.52.nupkg.sha512"
+  ],
+  "logs": []
+}

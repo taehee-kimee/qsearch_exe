@@ -4,35 +4,47 @@
         Title="Select Region"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#44000000"
+        Background="Transparent"
         Topmost="True"
-        WindowState="Maximized"
         Cursor="Cross"
         MouseLeftButtonDown="Window_MouseLeftButtonDown"
         MouseMove="Window_MouseMove"
         MouseLeftButtonUp="Window_MouseLeftButtonUp"
         KeyDown="Window_KeyDown">
 
-    <Canvas x:Name="SelectionCanvas">
-        <!-- Instruction Text -->
-        <TextBlock x:Name="InstructionText"
-                   Text="Click and drag to select the capture area. Press ESC to cancel."
-                   Foreground="White"
-                   FontSize="18"
-                   FontWeight="SemiBold"
-                   Canvas.Left="20"
-                   Canvas.Top="20">
-            <TextBlock.Effect>
-                <DropShadowEffect BlurRadius="5" ShadowDepth="2" Opacity="0.8"/>
-            </TextBlock.Effect>
-        </TextBlock>
+    <Grid>
+        <!-- 전체 화면을 반투명하게 덮는 오버레이 -->
+        <Rectangle x:Name="FullOverlay" Fill="#88000000"/>
+        
+        <!-- 선택된 창 영역만 밝게 보이도록 하는 Canvas -->
+        <Canvas x:Name="SelectionCanvas">
+            <!-- 선택된 창 영역 하이라이트 -->
+            <Border x:Name="WindowHighlight"
+                    BorderBrush="#00AAFF"
+                    BorderThickness="3"
+                    Background="#22000000">
+            </Border>
+            
+            <!-- Instruction Text -->
+            <TextBlock x:Name="InstructionText"
+                       Text="드래그하여 캡처 영역을 선택하세요. ESC: 취소"
+                       Foreground="White"
+                       FontSize="14"
+                       FontWeight="SemiBold"
+                       Padding="10,5"
+                       Background="#CC000000">
+                <TextBlock.Effect>
+                    <DropShadowEffect BlurRadius="5" ShadowDepth="2" Opacity="0.8"/>
+                </TextBlock.Effect>
+            </TextBlock>
 
-        <!-- Selection Rectangle -->
-        <Rectangle x:Name="SelectionRectangle"
-                   Stroke="#FF4444"
-                   StrokeThickness="2"
-                   StrokeDashArray="4 2"
-                   Fill="#22FF4444"
-                   Visibility="Collapsed"/>
-    </Canvas>
+            <!-- Selection Rectangle -->
+            <Rectangle x:Name="SelectionRectangle"
+                       Stroke="#FF4444"
+                       StrokeThickness="2"
+                       StrokeDashArray="4 2"
+                       Fill="#22FF4444"
+                       Visibility="Collapsed"/>
+        </Canvas>
+    </Grid>
 </Window>
