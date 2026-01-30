@@ -9,6 +9,8 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <!-- 커스텀 Main 메서드 사용 (자동 생성 비활성화) -->
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <!-- 진입점을 명시적으로 지정 -->
+    <StartupObject>QuizHelper.App</StartupObject>
   </PropertyGroup>
 
   <!-- Release 빌드 최적화 설정 -->
