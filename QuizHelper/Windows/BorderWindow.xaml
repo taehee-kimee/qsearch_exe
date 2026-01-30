@@ -1,0 +1,19 @@
+<Window x:Class="QuizHelper.Windows.BorderWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Capture Border"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        IsHitTestVisible="False"
+        Loaded="Window_Loaded">
+
+    <Border x:Name="BorderElement"
+            BorderBrush="#FFFF4444"
+            BorderThickness="2"
+            CornerRadius="0"
+            Background="Transparent"/>
+</Window>
