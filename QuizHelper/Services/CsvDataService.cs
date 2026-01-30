@@ -99,15 +99,17 @@ namespace QuizHelper.Services
 
         /// <summary>
         /// Get list of available CSV categories (file names without extension)
+        /// Only includes CSV files in the root data folder (excludes subfolders like backup)
         /// </summary>
         public List<string> GetAvailableCategories()
         {
             var categories = new List<string>();
-            
+
             if (!Directory.Exists(_dataFolderPath))
                 return categories;
 
-            var csvFiles = Directory.GetFiles(_dataFolderPath, "*.csv", SearchOption.AllDirectories);
+            // TopDirectoryOnly: backup 등 하위 폴더 제외
+            var csvFiles = Directory.GetFiles(_dataFolderPath, "*.csv", SearchOption.TopDirectoryOnly);
             foreach (var file in csvFiles)
             {
                 categories.Add(Path.GetFileNameWithoutExtension(file));
