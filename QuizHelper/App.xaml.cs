@@ -20,11 +20,12 @@ namespace QuizHelper
         {
             try
             {
-                // TODO: 실제 배포할 때 아래 URL을 본인의 웹사이트 주소로 변경하세요.
-                // 예: "https://mysite.com/downloads/" 또는 GitHub Releases URL
-                string updateUrl = "https://qplay-search.vercel.app/"; 
-
-                var mgr = new Velopack.UpdateManager(updateUrl);
+                // GitHub Releases를 업데이트 소스로 사용
+                // 첫 번째 인자: 리포지토리 URL
+                // 두 번째 인자: 액세스 토큰 (공개 리포지토리라면 null)
+                // 세 번째 인자: prerelease 포함 여부 (false = 정식 버전만)
+                var source = new Velopack.Sources.GithubSource("https://github.com/taehee-kimee/qplay_search", null, false);
+                var mgr = new Velopack.UpdateManager(source);
 
                 // 새 버전 확인
                 var newVersion = await mgr.CheckForUpdatesAsync();

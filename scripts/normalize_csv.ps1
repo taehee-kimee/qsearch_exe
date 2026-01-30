@@ -3,7 +3,7 @@
 # 사용법: .\scripts\normalize_csv.ps1
 
 param(
-    [string]$DataPath = "..\data"
+    [string]$DataPath = "..\QuizHelper\data"
 )
 
 $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -85,7 +85,8 @@ foreach ($file in $csvFiles) {
         if ($convertedCount -gt 0) {
             Write-Host "  Converted $convertedCount lines" -ForegroundColor Green
             $totalConverted += $convertedCount
-        } else {
+        }
+        else {
             Write-Host "  Already normalized (no changes needed)" -ForegroundColor Gray
             $totalSkipped++
         }
