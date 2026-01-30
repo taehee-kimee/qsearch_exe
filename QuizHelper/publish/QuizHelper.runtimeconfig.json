@@ -12,7 +12,11 @@
       }
     ],
     "configProperties": {
-      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false
+      "System.Globalization.Invariant": false,
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false,
+      "System.Runtime.TieredCompilation": true,
+      "System.Runtime.TieredCompilation.QuickJit": true
     }
   }
 }

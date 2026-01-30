@@ -15,6 +15,10 @@ Write-Host "1. Cleaning previous build..." -ForegroundColor Yellow
 if (Test-Path $releaseDir) {
     Remove-Item $releaseDir -Recurse -Force
 }
+# Clean publish directory to avoid stale files
+if (Test-Path "$projectDir\publish") {
+    Remove-Item "$projectDir\publish" -Recurse -Force
+}
 New-Item -ItemType Directory -Path $releaseDir | Out-Null
 
 # 2. Publish Project
