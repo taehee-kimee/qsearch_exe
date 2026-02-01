@@ -4,7 +4,9 @@ data/backup/
 # Build outputs
 bin/
 obj/
+publish/
 QuizHelper/Releases/
+temp_extract/
 
 # User-specific files
 *.user
