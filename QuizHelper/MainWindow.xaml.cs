@@ -457,7 +457,27 @@ namespace QuizHelper
                     AnswerText.Text = $"✓ {bestMatch.Answer}";
                     AnswerText.Visibility = Visibility.Visible;
                     
-                    StatusText.Text = $"상태: 매칭 발견 (정확도: {bestMatch.Score}%)";
+                    // kkong 카테고리일 때 정답 자동 복사
+                    if (_csvDataService.CurrentCategory?.Equals("kkong", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        try
+                        {
+                            string cleanedAnswer = CleanAnswer(bestMatch.Answer);
+                            Clipboard.SetText(cleanedAnswer);
+                            System.Diagnostics.Debug.WriteLine($"[CLIPBOARD] kkong 정답 복사됨: {cleanedAnswer}");
+                            
+                            // 시각적 피드백 표시
+                            ShowCopyFeedback(cleanedAnswer);
+                        }
+                        catch (Exception clipEx)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[CLIPBOARD] 복사 실패: {clipEx.Message}");
+                        }
+                    }
+                    else
+                    {
+                        StatusText.Text = $"상태: 매칭 발견 (정확도: {bestMatch.Score}%)";
+                    }
                     
                     // 2, 3등은 일단 숨김
                     AlternativesBorder.Visibility = Visibility.Collapsed;
@@ -539,6 +559,119 @@ namespace QuizHelper
             if (string.IsNullOrEmpty(text)) return text;
             text = text.Replace("\r\n", " ").Replace("\n", " ");
             return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+        }
+
+        /// <summary>
+        /// 정답에서 순수한 답만 추출 (닉네임, 별표 등 제거)
+        /// </summary>
+        private static string CleanAnswer(string answer)
+        {
+            if (string.IsNullOrWhiteSpace(answer))
+                return string.Empty;
+
+            string cleaned = answer;
+
+            // 1. 슬래시(/)로 구분된 경우 첫 번째만 선택
+            //    예: "상파울로 / 상파울루" → "상파울로"
+            if (cleaned.Contains('/'))
+            {
+                cleaned = cleaned.Split('/')[0].Trim();
+            }
+
+            // 2. 특수문자(별표 등) 이후 텍스트 제거
+            //    예: "조개★닉네임" → "조개"
+            var separators = new[] { '★', '☆', '*', '※', '•', '▪', '▫' };
+            foreach (var sep in separators)
+            {
+                int idx = cleaned.IndexOf(sep);
+                if (idx > 0)
+                {
+                    cleaned = cleaned.Substring(0, idx).Trim();
+                    break;
+                }
+            }
+
+            // 3. 하이픈(-) 이후 제거
+            //    예: "시너지-닉네임" → "시너지"
+            int hyphenIdx = cleaned.IndexOf('-');
+            if (hyphenIdx > 0)
+            {
+                cleaned = cleaned.Substring(0, hyphenIdx).Trim();
+            }
+
+            return cleaned.Trim();
+        }
+
+        /// <summary>
+        /// 정답 텍스트 클릭 시 클립보드에 복사
+        /// </summary>
+        private void AnswerText_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(AnswerText.Text))
+                return;
+
+            try
+            {
+                // "✓ " 접두사 제거 후 정제된 답 복사
+                string answer = AnswerText.Text;
+                if (answer.StartsWith("✓ "))
+                {
+                    answer = answer.Substring(2);
+                }
+
+                string cleanedAnswer = CleanAnswer(answer);
+                Clipboard.SetText(cleanedAnswer);
+                
+                // 시각적 피드백 표시
+                ShowCopyFeedback(cleanedAnswer);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CLIPBOARD] 복사 실패: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 2, 3순위 답 클릭 시 클립보드에 복사
+        /// </summary>
+        private void AlternativeItem_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement element && element.DataContext is Models.MatchResult match)
+            {
+                try
+                {
+                    string cleanedAnswer = CleanAnswer(match.Answer);
+                    Clipboard.SetText(cleanedAnswer);
+                    StatusText.Text = $"📋 복사됨: {cleanedAnswer}";
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CLIPBOARD] 복사 실패: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// 복사 성공 시 시각적 피드백 표시
+        /// </summary>
+        private void ShowCopyFeedback(string copiedText)
+        {
+            // 1. StatusText에 복사됨 메시지 표시
+            StatusText.Text = $"📋 복사됨: {copiedText}";
+
+            // 2. 정답 텍스트 색상을 초록색으로 변경
+            AnswerText.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0x00, 0xFF, 0x00));
+
+            // 3. 0.5초 후 원래 노란색으로 복원
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            timer.Tick += (s, args) =>
+            {
+                AnswerText.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xFF, 0xFF, 0x00));
+                timer.Stop();
+            };
+            timer.Start();
         }
 
         private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)

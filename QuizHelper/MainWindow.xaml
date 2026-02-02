@@ -117,7 +117,7 @@
                                Margin="0,0,0,8"
                                Visibility="Collapsed"/>
                     
-                    <!-- Answer Text (Highlighted) -->
+                    <!-- Answer Text (Highlighted) - 클릭하면 복사 -->
                     <TextBlock x:Name="AnswerText"
                                Text=""
                                Foreground="#FFFF00"
@@ -125,6 +125,9 @@
                                FontWeight="Bold"
                                TextWrapping="Wrap"
                                TextAlignment="Center"
+                               Cursor="Hand"
+                               MouseLeftButtonUp="AnswerText_Click"
+                               ToolTip="클릭하면 복사됩니다"
                                Visibility="Collapsed"/>
                     
                     <!-- Alternative Candidates Area -->
@@ -143,7 +146,11 @@
                             <ItemsControl x:Name="AlternativesList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <StackPanel Margin="0,4,0,4">
+                                        <StackPanel Margin="0,4,0,4"
+                                                    Cursor="Hand"
+                                                    Background="Transparent"
+                                                    MouseLeftButtonUp="AlternativeItem_Click"
+                                                    ToolTip="클릭하면 복사됩니다">
                                             <TextBlock Foreground="#CCFFFF00" FontSize="13" TextWrapping="Wrap">
                                                 <Run Text="{Binding Rank, StringFormat={}{0}. }"/>
                                                 <Run Text="{Binding Answer}" FontWeight="SemiBold"/>
