@@ -37,6 +37,9 @@ namespace QuizHelper.Services
         private readonly List<QuizEntry> _entries = new();
         private readonly string _dataFolderPath;
         private readonly string _logFilePath;
+        
+        // 역색인: 키워드 → 항목 인덱스 목록
+        private Dictionary<string, HashSet<int>> _keywordIndex = new();
 
         public int QuestionCount => _entries.Count;
         public string? CurrentCategory { get; private set; }
@@ -138,6 +141,9 @@ namespace QuizHelper.Services
                 await LoadCsvFileAsync(filePath);
             }
 
+            // 역색인 빌드
+            BuildKeywordIndex();
+            
             return _entries.Count;
         }
 
@@ -159,6 +165,9 @@ namespace QuizHelper.Services
                 await LoadCsvFileAsync(file);
             }
 
+            // 역색인 빌드
+            BuildKeywordIndex();
+            
             return _entries.Count;
         }
 
@@ -208,6 +217,111 @@ namespace QuizHelper.Services
             {
                 System.Diagnostics.Debug.WriteLine($"Error loading CSV {filePath}: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// 역색인 빌드 - 각 질문의 키워드를 인덱싱
+        /// </summary>
+        private void BuildKeywordIndex()
+        {
+            _keywordIndex.Clear();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            
+            for (int i = 0; i < _entries.Count; i++)
+            {
+                var entry = _entries[i];
+                // 질문과 답에서 키워드 추출
+                var keywords = ExtractIndexKeywords(entry.Question);
+                var answerKeywords = ExtractIndexKeywords(entry.Answer);
+                
+                foreach (var keyword in keywords.Concat(answerKeywords))
+                {
+                    if (!_keywordIndex.ContainsKey(keyword))
+                    {
+                        _keywordIndex[keyword] = new HashSet<int>();
+                    }
+                    _keywordIndex[keyword].Add(i);
+                }
+            }
+            
+            sw.Stop();
+            Log($"[INDEX] 역색인 빌드 완료: {_keywordIndex.Count}개 키워드, {_entries.Count}개 항목, {sw.ElapsedMilliseconds}ms");
+        }
+
+        /// <summary>
+        /// 인덱싱용 키워드 추출 (2글자 이상 한글 단어)
+        /// </summary>
+        private static HashSet<string> ExtractIndexKeywords(string text)
+        {
+            var keywords = new HashSet<string>();
+            if (string.IsNullOrEmpty(text)) return keywords;
+            
+            // 정규화
+            string normalized = text.ToLowerInvariant();
+            
+            // 한글 단어 추출 (2글자 이상)
+            var matches = System.Text.RegularExpressions.Regex.Matches(normalized, @"[가-힣]{2,}");
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                keywords.Add(match.Value);
+            }
+            
+            // 영문 단어 추출 (2글자 이상)
+            var engMatches = System.Text.RegularExpressions.Regex.Matches(normalized, @"[a-z]{2,}");
+            foreach (System.Text.RegularExpressions.Match match in engMatches)
+            {
+                keywords.Add(match.Value);
+            }
+            
+            // 숫자 추출 (연도 등)
+            var numMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\d{2,}");
+            foreach (System.Text.RegularExpressions.Match match in numMatches)
+            {
+                keywords.Add(match.Value);
+            }
+            
+            return keywords;
+        }
+
+        /// <summary>
+        /// 역색인을 사용해 후보 인덱스 추출
+        /// </summary>
+        private HashSet<int> GetCandidatesByKeywords(string ocrText, int maxCandidates = 100)
+        {
+            var candidates = new HashSet<int>();
+            var ocrKeywords = ExtractIndexKeywords(ocrText);
+            
+            if (ocrKeywords.Count == 0)
+                return candidates;
+            
+            // 각 키워드에 해당하는 항목 수집
+            var keywordHits = new Dictionary<int, int>(); // 항목 인덱스 → 매칭된 키워드 수
+            
+            foreach (var keyword in ocrKeywords)
+            {
+                if (_keywordIndex.TryGetValue(keyword, out var indices))
+                {
+                    foreach (var idx in indices)
+                    {
+                        if (!keywordHits.ContainsKey(idx))
+                            keywordHits[idx] = 0;
+                        keywordHits[idx]++;
+                    }
+                }
+            }
+            
+            // 키워드 매칭 수가 많은 순으로 정렬하여 상위 N개 선택
+            var sorted = keywordHits
+                .OrderByDescending(kv => kv.Value)
+                .Take(maxCandidates)
+                .Select(kv => kv.Key);
+            
+            foreach (var idx in sorted)
+            {
+                candidates.Add(idx);
+            }
+            
+            return candidates;
         }
 
         /// <summary>
@@ -314,7 +428,7 @@ namespace QuizHelper.Services
                 Log($"추출된 보기: {string.Join(" | ", choices)}");
             }
 
-            // === 3단계: 매칭 후보 검색 ===
+            // === 3단계: 매칭 후보 검색 (역색인 활용) ===
             // Store top candidates for debugging (QLen for tie-breaking)
             var topCandidates = new List<(string Question, string Answer, int Score, string MatchType, int QLen, string Category)>();
             
@@ -325,8 +439,26 @@ namespace QuizHelper.Services
             
             // 키워드는 루프 밖에서 한 번만 추출 (성능 최적화)
             var keywords = ExtractKeywords(normalizedOcr);
+            
+            // === 역색인으로 후보 추출 ===
+            var candidateIndices = GetCandidatesByKeywords(ocrText, 100);
+            bool useIndex = candidateIndices.Count > 0;
+            
+            if (useIndex)
+            {
+                Log($"[INDEX] 역색인 후보: {candidateIndices.Count}개");
+            }
+            else
+            {
+                Log($"[INDEX] 역색인 후보 없음, 전체 검색");
+            }
+            
+            // 역색인 후보가 있으면 후보만, 없으면 전체 검색
+            var searchTargets = useIndex 
+                ? candidateIndices.Select(i => (Index: i, Entry: _entries[i]))
+                : _entries.Select((e, i) => (Index: i, Entry: e));
 
-            foreach (var entry in _entries)
+            foreach (var (entryIndex, entry) in searchTargets)
             {
                 // 글자수 힌트가 있으면 정답 길이로 필터링 (성능 및 정확도 향상)
                 if (answerLengthHint.HasValue)
@@ -485,7 +617,8 @@ namespace QuizHelper.Services
             
             // 성능 측정 종료
             sw.Stop();
-            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
+            string indexStatus = useIndex ? $"역색인({candidateIndices.Count})" : "전체검색";
+            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, {indexStatus}, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
             
             // Sort by score descending, then by question length similarity to OCR (closer = better)
             int ocrLength = normalizedOcr.Length;
@@ -615,7 +748,7 @@ namespace QuizHelper.Services
                 return results;
             }
 
-            // === 3단계: 매칭 (FindBestMatch와 동일한 로직 사용, 하이브리드 모드) ===
+            // === 3단계: 매칭 (역색인 활용, 하이브리드 모드) ===
             var choices = ExtractChoices(ocrText);
             if (choices.Count > 0)
             {
@@ -630,8 +763,25 @@ namespace QuizHelper.Services
             
             bool perfectMatchFound = false;
             int remainingAfterPerfect = 500;
+            
+            // === 역색인으로 후보 추출 ===
+            var candidateIndices = GetCandidatesByKeywords(ocrText, 100);
+            bool useIndex = candidateIndices.Count > 0;
+            
+            if (useIndex)
+            {
+                Log($"[INDEX] 역색인 후보: {candidateIndices.Count}개");
+            }
+            else
+            {
+                Log($"[INDEX] 역색인 후보 없음, 전체 검색");
+            }
+            
+            var searchTargets = useIndex 
+                ? candidateIndices.Select(i => (Index: i, Entry: _entries[i]))
+                : _entries.Select((e, i) => (Index: i, Entry: e));
 
-            foreach (var entry in _entries)
+            foreach (var (entryIndex, entry) in searchTargets)
             {
                 if (answerLengthHint.HasValue)
                 {
@@ -757,7 +907,8 @@ namespace QuizHelper.Services
             }
             
             sw.Stop();
-            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
+            string indexStatusTopN = useIndex ? $"역색인({candidateIndices.Count})" : "전체검색";
+            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, {indexStatusTopN}, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
             
             int ocrLength = normalizedOcr.Length;
             topCandidates.Sort((a, b) => 
