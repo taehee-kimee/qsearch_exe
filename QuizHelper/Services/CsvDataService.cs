@@ -545,6 +545,272 @@ namespace QuizHelper.Services
 
             return null;
         }
+
+        /// <summary>
+        /// OCR 텍스트에서 상위 N개 매칭 결과를 반환
+        /// </summary>
+        public SearchResults FindTopMatches(string ocrText, int minimumScore = 80, int maxCount = 3)
+        {
+            var results = new SearchResults();
+
+            if (string.IsNullOrWhiteSpace(ocrText) || _entries.Count == 0)
+                return results;
+
+            // === 1단계: 화면 분류 및 전처리 ===
+            var classification = ClassifyScreen(ocrText);
+
+            Log("");
+            Log("=== OCR 매칭 시작 (Top N) ===");
+            Log($"원본 OCR: {ocrText.Replace("\r\n", " ").Replace("\n", " ")}");
+            Log($"화면 타입: {classification.Type}");
+
+            // 시스템 메시지나 매크로 방지 화면은 무시
+            if (classification.Type == ScreenType.SystemMessage)
+            {
+                Log("[SKIP] 시스템 메시지 - 매칭 불필요");
+                return results;
+            }
+
+            if (classification.Type == ScreenType.AntiMacro)
+            {
+                Log("[SKIP] 매크로 방지 화면 - 매칭 불가");
+                return results;
+            }
+
+            // 정답 화면인 경우: 정답 직접 반환
+            if (classification.Type == ScreenType.Answer && !string.IsNullOrEmpty(classification.ExtractedAnswer))
+            {
+                Log($"[ANSWER] 정답 화면 감지 - 추출된 정답: {classification.ExtractedAnswer}");
+
+                var matchedEntry = _entries.Find(e =>
+                    NormalizeText(e.Answer).Equals(NormalizeText(classification.ExtractedAnswer), StringComparison.OrdinalIgnoreCase));
+
+                results.Candidates.Add(new MatchResult
+                {
+                    Question = matchedEntry?.Question ?? "(정답 화면에서 추출)",
+                    Answer = classification.ExtractedAnswer,
+                    Category = matchedEntry?.Category ?? "answer_screen",
+                    Score = 100,
+                    Rank = 1
+                });
+                return results;
+            }
+
+            // === 2단계: 문제 화면 처리 ===
+            string cleanedText = !string.IsNullOrEmpty(classification.CleanedText)
+                ? classification.CleanedText
+                : ocrText;
+
+            string normalizedOcr = NormalizeText(cleanedText);
+            int? answerLengthHint = classification.AnswerLength;
+
+            Log($"전처리된 텍스트: {cleanedText}");
+            Log($"정규화된 OCR: {normalizedOcr}");
+
+            // === 최소 길이 체크 ===
+            const int MinimumOcrLength = 10;
+            if (normalizedOcr.Length < MinimumOcrLength)
+            {
+                Log($"[SKIP] OCR 텍스트가 너무 짧음 ({normalizedOcr.Length}글자 < {MinimumOcrLength}글자)");
+                return results;
+            }
+
+            // === 3단계: 매칭 (FindBestMatch와 동일한 로직 사용, 하이브리드 모드) ===
+            var choices = ExtractChoices(ocrText);
+            if (choices.Count > 0)
+            {
+                Log($"추출된 보기: {string.Join(" | ", choices)}");
+            }
+
+            var topCandidates = new List<(string Question, string Answer, int Score, string MatchType, int QLen, string Category)>();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int checkedCount = 0;
+            int skippedByPreFilter = 0;
+            var keywords = ExtractKeywords(normalizedOcr);
+            
+            bool perfectMatchFound = false;
+            int remainingAfterPerfect = 500;
+
+            foreach (var entry in _entries)
+            {
+                if (answerLengthHint.HasValue)
+                {
+                    int answerLen = entry.Answer.Replace(" ", "").Length;
+                    if (Math.Abs(answerLen - answerLengthHint.Value) > 1)
+                        continue;
+                }
+
+                string normalizedQuestion = NormalizeText(entry.Question);
+                string normalizedAnswer = NormalizeText(entry.Answer);
+
+                int partialScore = Fuzz.PartialRatio(normalizedOcr, normalizedQuestion);
+                if (partialScore < 40)
+                {
+                    skippedByPreFilter++;
+                    continue;
+                }
+                
+                checkedCount++;
+
+                int tokenScore = Fuzz.TokenSetRatio(normalizedOcr, normalizedQuestion);
+                int weightedScore = Fuzz.WeightedRatio(normalizedOcr, normalizedQuestion);
+                int fuzzyScore = Math.Max(Math.Max(partialScore, tokenScore), weightedScore);
+                
+                int ocrLen = normalizedOcr.Length;
+                int qLen = normalizedQuestion.Length;
+                if (qLen > 0 && ocrLen > qLen * 5)
+                {
+                    double ratio = (double)ocrLen / qLen;
+                    double penalty = Math.Min(0.5, (ratio - 5) * 0.05);
+                    fuzzyScore = (int)(fuzzyScore * (1 - penalty));
+                }
+                
+                int choiceScore = 0;
+                if (choices.Count >= 2)
+                {
+                    foreach (var choice in choices)
+                    {
+                        string normalizedChoice = NormalizeText(choice);
+                        int answerMatch = Fuzz.Ratio(normalizedChoice, normalizedAnswer);
+
+                        if (answerMatch >= 80)
+                        {
+                            int questionContainsChoices = 0;
+                            foreach (var c in choices)
+                            {
+                                if (normalizedQuestion.Contains(NormalizeText(c)))
+                                    questionContainsChoices++;
+                            }
+
+                            if (fuzzyScore >= 60)
+                            {
+                                choiceScore = questionContainsChoices >= 2 
+                                    ? Math.Max(choiceScore, fuzzyScore + 15)
+                                    : Math.Max(choiceScore, fuzzyScore + 10);
+                            }
+                            else
+                            {
+                                choiceScore = Math.Max(choiceScore, 70);
+                            }
+                        }
+                    }
+                }
+                
+                int keywordScore = 0;
+                if (keywords.Count >= 2)
+                {
+                    int matchedKeywords = 0;
+                    foreach (var keyword in keywords)
+                    {
+                        if (normalizedQuestion.Contains(keyword) || normalizedAnswer.Contains(keyword))
+                            matchedKeywords++;
+                    }
+                    
+                    if (keywords.Count > 0)
+                    {
+                        keywordScore = (matchedKeywords * 100) / keywords.Count;
+                        if (keywordScore < 50) keywordScore = 0;
+                    }
+                }
+
+                int finalScore = Math.Max(Math.Max(fuzzyScore, choiceScore), keywordScore);
+                string matchType = finalScore == fuzzyScore ? "Fuzzy" : 
+                                   finalScore == choiceScore ? "Choice" : "Keyword";
+
+                // 100% 매칭 발견 시 하이브리드 모드 시작
+                if (finalScore >= 100 && !perfectMatchFound)
+                {
+                    perfectMatchFound = true;
+                    Log($"[HYBRID] 완전 매칭 발견, 추가 {remainingAfterPerfect}개 검색 시작");
+                }
+
+                if (finalScore >= 50)
+                {
+                    if (topCandidates.Count < 10)
+                    {
+                        topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category));
+                    }
+                    else
+                    {
+                        int minIdx = 0;
+                        int minScore = topCandidates[0].Score;
+                        for (int i = 1; i < topCandidates.Count; i++)
+                        {
+                            if (topCandidates[i].Score < minScore)
+                            {
+                                minScore = topCandidates[i].Score;
+                                minIdx = i;
+                            }
+                        }
+                        if (finalScore > minScore)
+                        {
+                            topCandidates[minIdx] = (entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category);
+                        }
+                    }
+                }
+
+                if (perfectMatchFound && --remainingAfterPerfect <= 0)
+                {
+                    Log($"[HYBRID] 추가 검색 완료, 루프 종료");
+                    break;
+                }
+            }
+            
+            sw.Stop();
+            Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
+            
+            int ocrLength = normalizedOcr.Length;
+            topCandidates.Sort((a, b) => 
+            {
+                int scoreCompare = b.Score.CompareTo(a.Score);
+                if (scoreCompare != 0) return scoreCompare;
+                int aDiff = Math.Abs(a.QLen - ocrLength);
+                int bDiff = Math.Abs(b.QLen - ocrLength);
+                return aDiff.CompareTo(bDiff);
+            });
+            
+            Log($"상위 매칭 후보 (최소 점수: {minimumScore}):");
+            for (int i = 0; i < Math.Min(3, topCandidates.Count); i++)
+            {
+                var candidate = topCandidates[i];
+                Log($"  {i + 1}. [{candidate.Score}%][{candidate.MatchType}] Q: {TruncateForLog(candidate.Question, 40)} -> A: {candidate.Answer}");
+            }
+
+            // === 4단계: 상위 N개 결과 반환 ===
+            if (topCandidates.Count > 0)
+            {
+                var best = topCandidates[0];
+                int secondScore = topCandidates.Count > 1 ? topCandidates[1].Score : 0;
+                int scoreDiff = best.Score - secondScore;
+
+                bool meetsMinimum = best.Score >= minimumScore;
+                bool hasSignificantLead = best.Score >= 65 && scoreDiff >= 15;
+
+                if (meetsMinimum || hasSignificantLead)
+                {
+                    Log($"[SUCCESS] 매칭 성공");
+
+                    for (int i = 0; i < Math.Min(maxCount, topCandidates.Count); i++)
+                    {
+                        var candidate = topCandidates[i];
+                        results.Candidates.Add(new MatchResult
+                        {
+                            Question = candidate.Question,
+                            Answer = candidate.Answer,
+                            Category = candidate.Category,
+                            Score = candidate.Score,
+                            Rank = i + 1
+                        });
+                    }
+                }
+                else
+                {
+                    Log($"[FAIL] 매칭 실패: 기준 미달");
+                }
+            }
+
+            return results;
+        }
         
         /// <summary>
         /// OCR 텍스트에서 보기(1. xxx 2. xxx 형태)를 추출

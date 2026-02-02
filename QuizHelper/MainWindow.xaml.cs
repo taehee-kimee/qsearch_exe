@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -202,6 +203,8 @@ namespace QuizHelper
             QuestionText.Visibility = Visibility.Collapsed;
             AnswerText.Text = "";
             AnswerText.Visibility = Visibility.Collapsed;
+            AlternativesBorder.Visibility = Visibility.Collapsed;
+            AlternativesList.ItemsSource = null;
         }
 
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -440,21 +443,53 @@ namespace QuizHelper
                     return;
                 }
 
-                // Search for matching answer
-                var result = _csvDataService.FindBestMatch(ocrText, FuzzyMatchThreshold);
+                // 1단계: FindBestMatch()로 1등 빠르게 표시 (Early Exit 활성화)
+                var bestMatch = _csvDataService.FindBestMatch(ocrText, FuzzyMatchThreshold);
 
-                if (result != null)
+                if (bestMatch != null)
                 {
-                    // Show both question and answer with answer highlighted
+                    // 즉시 1등 표시
                     ResultText.Visibility = Visibility.Collapsed;
                     
-                    QuestionText.Text = TruncateText(result.Question, 150);
+                    QuestionText.Text = TruncateText(bestMatch.Question, 150);
                     QuestionText.Visibility = Visibility.Visible;
                     
-                    AnswerText.Text = $"✓ {result.Answer}";
+                    AnswerText.Text = $"✓ {bestMatch.Answer}";
                     AnswerText.Visibility = Visibility.Visible;
                     
-                    StatusText.Text = $"상태: 매칭 발견 (정확도: {result.Score}%)";
+                    StatusText.Text = $"상태: 매칭 발견 (정확도: {bestMatch.Score}%)";
+                    
+                    // 2, 3등은 일단 숨김
+                    AlternativesBorder.Visibility = Visibility.Collapsed;
+                    AlternativesList.ItemsSource = null;
+                    
+                    // 2단계: 백그라운드에서 2, 3등 검색 후 업데이트
+                    string capturedOcrText = ocrText;
+                    string bestAnswer = bestMatch.Answer;
+                    _ = Task.Run(() =>
+                    {
+                        var results = _csvDataService.FindTopMatches(capturedOcrText, FuzzyMatchThreshold, 3);
+                        
+                        // UI 스레드에서 2, 3등 업데이트
+                        Dispatcher.Invoke(() =>
+                        {
+                            // OCR 텍스트가 변경되지 않았을 때만 업데이트
+                            if (_lastOcrText == capturedOcrText && results.HasAlternatives)
+                            {
+                                // 중복 답 제거: 1등과 같은 답은 제외
+                                var alternatives = results.Candidates
+                                    .Skip(1)
+                                    .Where(c => c.Answer != bestAnswer)
+                                    .ToList();
+                                
+                                if (alternatives.Count > 0)
+                                {
+                                    AlternativesList.ItemsSource = alternatives;
+                                    AlternativesBorder.Visibility = Visibility.Visible;
+                                }
+                            }
+                        });
+                    });
                 }
                 else
                 {

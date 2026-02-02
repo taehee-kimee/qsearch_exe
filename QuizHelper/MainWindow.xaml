@@ -127,6 +127,42 @@
                                TextAlignment="Center"
                                Visibility="Collapsed"/>
                     
+                    <!-- Alternative Candidates Area -->
+                    <Border x:Name="AlternativesBorder"
+                            Background="#11FFFFFF"
+                            CornerRadius="4"
+                            Padding="8"
+                            Margin="0,12,0,0"
+                            Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="─── 혹시 이건가요? ───"
+                                       Foreground="#66FFFFFF"
+                                       FontSize="10"
+                                       TextAlignment="Center"
+                                       Margin="0,0,0,6"/>
+                            <ItemsControl x:Name="AlternativesList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Margin="0,4,0,4">
+                                            <TextBlock Foreground="#CCFFFF00" FontSize="13" TextWrapping="Wrap">
+                                                <Run Text="{Binding Rank, StringFormat={}{0}. }"/>
+                                                <Run Text="{Binding Answer}" FontWeight="SemiBold"/>
+                                                <Run Text="{Binding Score, StringFormat=' ({0}%)'}" Foreground="#88FFFFFF"/>
+                                            </TextBlock>
+                                            <TextBlock Text="{Binding Question}"
+                                                       Foreground="#66FFFFFF"
+                                                       FontSize="10"
+                                                       TextWrapping="Wrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       MaxHeight="30"
+                                                       Margin="12,2,0,0"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+                    
                     <!-- Default/Status Message -->
                     <TextBlock x:Name="ResultText"
                                Text="영역을 선택하고 시작 버튼을 눌러주세요..."
