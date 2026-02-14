@@ -293,6 +293,15 @@ namespace QuizHelper.Services
 
             Log($"전처리된 텍스트: {cleanedText}");
             Log($"정규화된 OCR: {normalizedOcr}");
+
+            // === 최소 길이 체크 ===
+            // 정규화 후 10글자 미만이면 오매칭 가능성 높음 (예: 외계어 ":뇨't>l" → "뇨 t l")
+            const int MinimumOcrLength = 10;
+            if (normalizedOcr.Length < MinimumOcrLength)
+            {
+                Log($"[SKIP] OCR 텍스트가 너무 짧음 ({normalizedOcr.Length}글자 < {MinimumOcrLength}글자)");
+                return null;
+            }
             if (answerLengthHint.HasValue)
             {
                 Log($"글자수 힌트: {answerLengthHint}글자");
@@ -596,6 +605,7 @@ namespace QuizHelper.Services
         {
             var systemPatterns = new[]
             {
+                // 기존 패턴
                 @"시상식",
                 @"상금으로.*원을",
                 @"경험치를.*만큼",
@@ -606,6 +616,26 @@ namespace QuizHelper.Services
                 @"재널\s*변경",
                 @"방정보",
                 @"에\s*관한\s*문제입니다\.?\s*$",  // "<문제 N> "xxx"에 관한 문제입니다." 형태
+
+                // 게임 UI 메시지 (로그 분석으로 추가)
+                @"사용자\s*대기중",
+                @"오신\s*것을\s*환영",
+                @"오신것을\s*환영",
+                @"게임을\s*시작할\s*수\s*있습니다",
+                @"게임을\s*시작하기\s*위해",
+                @"틀리게\s*되면",
+                @"틀리게되면",
+                @"더\s*이상\s*문제를\s*푸실",
+                @"정답\s*번호를\s*클릭",
+                @"올라오는\s*정답",
+                @"주관식으로\s*문제를",
+                @"객관식으로\s*문제를",
+                
+                // 숫자 포함 대기 메시지 (매칭 리소스 낭비 방지)
+                @"현재\s*\d+\s*명으로.*게임",           // "현재 5명으로, 게임을..."
+                @"\d+\s*명이\s*더\s*들어와야",          // "1명이 더 들어와야..."
+                @"님이\s*선두입니다",                    // "xxx님이 선두입니다"
+                @"PLAYING|WAITING|CHANNEL",              // 게임 UI 텍스트
             };
 
             foreach (var pattern in systemPatterns)
@@ -757,6 +787,17 @@ namespace QuizHelper.Services
                 .Replace('|', 'l')     // 파이프 -> l
                 .Replace('`', '\'')   // 백틱 -> 작은따옴표
                 .Replace('~', '-');    // 물결 -> 하이픈
+            
+            // Step 1A: Fix number-related OCR errors (숫자 관련 OCR 오류 보정)
+            // 온도 표기 오류 수정
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)로C", "$1℃");     // 2로C -> 2℃
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)도C", "$1℃");     // 25도C -> 25℃
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"(\d+)結C", "$1℃");     // 37結C -> 37℃
+            result = result.Replace("결C", "℃").Replace("도C", "℃");                               // 결C, 도C -> ℃
+            
+            // 흔한 단어 오인식 수정
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"입루출저빅", "입출력");  // 입출력 오인식
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"ß루출저빅", "입출력");   // 입출력 오인식 변형
             
             // Step 2: Remove special characters but keep Korean, English, numbers
             result = System.Text.RegularExpressions.Regex.Replace(result, @"[^\w\s가-힣ㄱ-ㅎㅏ-ㅣ]", " ");
