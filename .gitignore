@@ -5,8 +5,11 @@ data/backup/
 bin/
 obj/
 publish/
+Releases/
 QuizHelper/Releases/
 temp_extract/
+*.nupkg
+QuizHelper-*.zip
 
 # User-specific files
 *.user
