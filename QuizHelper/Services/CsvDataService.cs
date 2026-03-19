@@ -41,6 +41,28 @@ namespace QuizHelper.Services
         // 역색인: 키워드 → 항목 인덱스 목록
         private Dictionary<string, HashSet<int>> _keywordIndex = new();
 
+        // IDF 가중치용 문서 빈도
+        private Dictionary<string, int> _keywordDocFrequency = new Dictionary<string, int>();
+
+        // 일반적인 조사/어미 등 무의미한 단어
+        private static readonly HashSet<string> _commonWords = new HashSet<string>
+        {
+            "것이다", "입니다", "습니다", "한다", "이다", "있다", "없다",
+            "하는", "되는", "있는", "없는", "것은", "것을", "것이",
+            "무엇", "어떤", "다음", "중에서", "가운데", "대한",
+            "하고", "에서", "으로", "부터", "까지", "라고", "했다", "된다", "하여",
+            "같은", "통해", "위해", "중인", "라는", "해서", "하면", "때문",
+            "그리고", "또는", "그러나", "하지만", "따라서",
+            "문제", "정답", "보기", "해당", "관련", "경우"
+        };
+
+        private struct EntryScore
+        {
+            public int Score;
+            public string MatchType;
+            public bool SkippedByPreFilter;
+        }
+
         public int QuestionCount => _entries.Count;
         public string? CurrentCategory { get; private set; }
         
@@ -244,6 +266,13 @@ namespace QuizHelper.Services
                 }
             }
             
+            // Build document frequency
+            _keywordDocFrequency.Clear();
+            foreach (var kvp in _keywordIndex)
+            {
+                _keywordDocFrequency[kvp.Key] = kvp.Value.Count;
+            }
+
             sw.Stop();
             Log($"[INDEX] 역색인 빌드 완료: {_keywordIndex.Count}개 키워드, {_entries.Count}개 항목, {sw.ElapsedMilliseconds}ms");
         }
@@ -263,9 +292,10 @@ namespace QuizHelper.Services
             var matches = System.Text.RegularExpressions.Regex.Matches(normalized, @"[가-힣]{2,}");
             foreach (System.Text.RegularExpressions.Match match in matches)
             {
-                keywords.Add(match.Value);
+                if (!IsCommonWord(match.Value))
+                    keywords.Add(match.Value);
             }
-            
+
             // 영문 단어 추출 (2글자 이상)
             var engMatches = System.Text.RegularExpressions.Regex.Matches(normalized, @"[a-z]{2,}");
             foreach (System.Text.RegularExpressions.Match match in engMatches)
@@ -295,17 +325,24 @@ namespace QuizHelper.Services
                 return candidates;
             
             // 각 키워드에 해당하는 항목 수집
-            var keywordHits = new Dictionary<int, int>(); // 항목 인덱스 → 매칭된 키워드 수
-            
+            var keywordHits = new Dictionary<int, double>(); // 항목 인덱스 → IDF 가중 점수
+
+            int totalEntries = _entries.Count > 0 ? _entries.Count : 1;
+
             foreach (var keyword in ocrKeywords)
             {
                 if (_keywordIndex.TryGetValue(keyword, out var indices))
                 {
+                    // IDF 가중치: 희귀한 키워드일수록 높은 점수
+                    double idfWeight = _keywordDocFrequency.ContainsKey(keyword)
+                        ? (double)totalEntries / _keywordDocFrequency[keyword]
+                        : 1.0;
+
                     foreach (var idx in indices)
                     {
                         if (!keywordHits.ContainsKey(idx))
                             keywordHits[idx] = 0;
-                        keywordHits[idx]++;
+                        keywordHits[idx] += idfWeight;
                     }
                 }
             }
@@ -441,9 +478,9 @@ namespace QuizHelper.Services
             var keywords = ExtractKeywords(normalizedOcr);
             
             // === 역색인으로 후보 추출 ===
-            var candidateIndices = GetCandidatesByKeywords(ocrText, 100);
+            var candidateIndices = GetCandidatesByKeywords(ocrText, 200);
             bool useIndex = candidateIndices.Count > 0;
-            
+
             if (useIndex)
             {
                 Log($"[INDEX] 역색인 후보: {candidateIndices.Count}개");
@@ -452,9 +489,9 @@ namespace QuizHelper.Services
             {
                 Log($"[INDEX] 역색인 후보 없음, 전체 검색");
             }
-            
+
             // 역색인 후보가 있으면 후보만, 없으면 전체 검색
-            var searchTargets = useIndex 
+            var searchTargets = useIndex
                 ? candidateIndices.Select(i => (Index: i, Entry: _entries[i]))
                 : _entries.Select((e, i) => (Index: i, Entry: e));
 
@@ -472,111 +509,26 @@ namespace QuizHelper.Services
                 string normalizedQuestion = NormalizeText(entry.Question);
                 string normalizedAnswer = NormalizeText(entry.Answer);
 
-                // === 최적화 1: Quick Pre-filtering ===
-                // 가장 빠른 PartialRatio만 먼저 계산, 40% 미만이면 스킵
-                int partialScore = Fuzz.PartialRatio(normalizedOcr, normalizedQuestion);
-                if (partialScore < 40)
+                var score = ScoreEntry(normalizedOcr, normalizedQuestion, normalizedAnswer, keywords, choices);
+
+                if (score.SkippedByPreFilter)
                 {
                     skippedByPreFilter++;
                     continue;
                 }
-                
                 checkedCount++;
 
-                // 40% 이상만 상세 계산
-                int tokenScore = Fuzz.TokenSetRatio(normalizedOcr, normalizedQuestion);
-                int weightedScore = Fuzz.WeightedRatio(normalizedOcr, normalizedQuestion);
-                int fuzzyScore = Math.Max(Math.Max(partialScore, tokenScore), weightedScore);
-                
-                // 길이 비율 페널티: OCR이 길고 질문이 짧을 때 점수 감소
-                // (짧은 OCR + 짧은 질문은 정상 매칭, 긴 OCR + 짧은 질문은 페널티)
-                int ocrLen = normalizedOcr.Length;
-                int qLen = normalizedQuestion.Length;
-                if (qLen > 0 && ocrLen > qLen * 5)  // OCR이 질문보다 5배 이상 길면
-                {
-                    // 비율에 따라 점수 감소 (최대 50% 감소)
-                    double ratio = (double)ocrLen / qLen;
-                    double penalty = Math.Min(0.5, (ratio - 5) * 0.05);  // 5배부터 시작, 15배에서 최대
-                    fuzzyScore = (int)(fuzzyScore * (1 - penalty));
-                }
-                
-                // Method 2: Choice-based matching (if choices were extracted)
-                // 방향 A 변형: Fuzzy 점수에 따라 Choice 점수 결정
-                // - Fuzzy >= 60%: Choice는 보너스로만 사용 (+10점)
-                // - Fuzzy < 60%: Choice 단독 허용하되 70점 상한
-                int choiceScore = 0;
-                if (choices.Count >= 2)
-                {
-                    foreach (var choice in choices)
-                    {
-                        string normalizedChoice = NormalizeText(choice);
-                        int answerMatch = Fuzz.Ratio(normalizedChoice, normalizedAnswer);
-
-                        if (answerMatch >= 80)
-                        {
-                            // 질문에 보기가 포함되어 있는지 확인
-                            int questionContainsChoices = 0;
-                            foreach (var c in choices)
-                            {
-                                if (normalizedQuestion.Contains(NormalizeText(c)))
-                                    questionContainsChoices++;
-                            }
-
-                            if (fuzzyScore >= 60)
-                            {
-                                // Fuzzy >= 60%: 보너스로만 사용
-                                if (questionContainsChoices >= 2)
-                                {
-                                    // 질문에 보기가 많이 포함되면 더 큰 보너스
-                                    choiceScore = Math.Max(choiceScore, fuzzyScore + 15);
-                                }
-                                else
-                                {
-                                    choiceScore = Math.Max(choiceScore, fuzzyScore + 10);
-                                }
-                            }
-                            else
-                            {
-                                // Fuzzy < 60%: Choice 단독 허용하되 70점 상한
-                                choiceScore = Math.Max(choiceScore, 70);
-                            }
-                        }
-                    }
-                }
-                
-                // Method 3: Keyword extraction matching (키워드는 이미 추출됨)
-                int keywordScore = 0;
-                if (keywords.Count >= 2)
-                {
-                    int matchedKeywords = 0;
-                    foreach (var keyword in keywords)
-                    {
-                        if (normalizedQuestion.Contains(keyword) || normalizedAnswer.Contains(keyword))
-                            matchedKeywords++;
-                    }
-                    
-                    if (keywords.Count > 0)
-                    {
-                        keywordScore = (matchedKeywords * 100) / keywords.Count;
-                        // Require at least 50% keyword match
-                        if (keywordScore < 50) keywordScore = 0;
-                    }
-                }
-
-                // Take the best score from all methods
-                int finalScore = Math.Max(Math.Max(fuzzyScore, choiceScore), keywordScore);
-                string matchType = finalScore == fuzzyScore ? "Fuzzy" : 
-                                   finalScore == choiceScore ? "Choice" : "Keyword";
+                int finalScore = score.Score;
+                string matchType = score.MatchType;
 
                 // === 최적화 2: Early Termination ===
-                // 100% 매칭이면 즉시 반환 (더 이상 검색 불필요)
                 if (finalScore >= 100)
                 {
                     sw.Stop();
                     Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms (Early Exit), 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
                     Log($"[EARLY_EXIT] 완전 매칭 발견: {finalScore}% ({matchType})");
                     Log($"  Q: {TruncateForLog(entry.Question, 50)} -> A: {entry.Answer}");
-                    
+
                     return new MatchResult
                     {
                         Question = entry.Question,
@@ -589,14 +541,12 @@ namespace QuizHelper.Services
                 // === 최적화 3: Top-10 후보만 유지 ===
                 if (finalScore >= 50)
                 {
-                    // 상위 10개만 유지
                     if (topCandidates.Count < 10)
                     {
                         topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category));
                     }
                     else
                     {
-                        // 현재 최저점보다 높으면 교체
                         int minIdx = 0;
                         int minScore = topCandidates[0].Score;
                         for (int i = 1; i < topCandidates.Count; i++)
@@ -614,7 +564,81 @@ namespace QuizHelper.Services
                     }
                 }
             }
-            
+
+            // Fallback: 역색인 결과가 부족하면 나머지 항목도 검색
+            if (useIndex && (topCandidates.Count == 0 || topCandidates[0].Score < 70))
+            {
+                Log("[FALLBACK] 역색인 결과 부족, 나머지 항목 검색");
+                var fallbackTargets = _entries.Select((e, i) => (Index: i, Entry: e))
+                    .Where(x => !candidateIndices.Contains(x.Index));
+
+                foreach (var (entryIndex, entry) in fallbackTargets)
+                {
+                    if (answerLengthHint.HasValue)
+                    {
+                        int answerLen = entry.Answer.Replace(" ", "").Length;
+                        if (Math.Abs(answerLen - answerLengthHint.Value) > 1)
+                            continue;
+                    }
+
+                    string normalizedQuestion = NormalizeText(entry.Question);
+                    string normalizedAnswer = NormalizeText(entry.Answer);
+
+                    var score = ScoreEntry(normalizedOcr, normalizedQuestion, normalizedAnswer, keywords, choices);
+
+                    if (score.SkippedByPreFilter)
+                    {
+                        skippedByPreFilter++;
+                        continue;
+                    }
+                    checkedCount++;
+
+                    int finalScore = score.Score;
+                    string matchType = score.MatchType;
+
+                    if (finalScore >= 100)
+                    {
+                        sw.Stop();
+                        Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms (Fallback Early Exit), 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
+                        Log($"[EARLY_EXIT] 완전 매칭 발견 (fallback): {finalScore}% ({matchType})");
+                        Log($"  Q: {TruncateForLog(entry.Question, 50)} -> A: {entry.Answer}");
+
+                        return new MatchResult
+                        {
+                            Question = entry.Question,
+                            Answer = entry.Answer,
+                            Category = entry.Category,
+                            Score = finalScore
+                        };
+                    }
+
+                    if (finalScore >= 50)
+                    {
+                        if (topCandidates.Count < 10)
+                        {
+                            topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category));
+                        }
+                        else
+                        {
+                            int minIdx = 0;
+                            int minScore = topCandidates[0].Score;
+                            for (int i = 1; i < topCandidates.Count; i++)
+                            {
+                                if (topCandidates[i].Score < minScore)
+                                {
+                                    minScore = topCandidates[i].Score;
+                                    minIdx = i;
+                                }
+                            }
+                            if (finalScore > minScore)
+                            {
+                                topCandidates[minIdx] = (entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category);
+                            }
+                        }
+                    }
+                }
+            }
+
             // 성능 측정 종료
             sw.Stop();
             string indexStatus = useIndex ? $"역색인({candidateIndices.Count})" : "전체검색";
@@ -765,9 +789,9 @@ namespace QuizHelper.Services
             int remainingAfterPerfect = 500;
             
             // === 역색인으로 후보 추출 ===
-            var candidateIndices = GetCandidatesByKeywords(ocrText, 100);
+            var candidateIndices = GetCandidatesByKeywords(ocrText, 200);
             bool useIndex = candidateIndices.Count > 0;
-            
+
             if (useIndex)
             {
                 Log($"[INDEX] 역색인 후보: {candidateIndices.Count}개");
@@ -776,8 +800,8 @@ namespace QuizHelper.Services
             {
                 Log($"[INDEX] 역색인 후보 없음, 전체 검색");
             }
-            
-            var searchTargets = useIndex 
+
+            var searchTargets = useIndex
                 ? candidateIndices.Select(i => (Index: i, Entry: _entries[i]))
                 : _entries.Select((e, i) => (Index: i, Entry: e));
 
@@ -793,79 +817,17 @@ namespace QuizHelper.Services
                 string normalizedQuestion = NormalizeText(entry.Question);
                 string normalizedAnswer = NormalizeText(entry.Answer);
 
-                int partialScore = Fuzz.PartialRatio(normalizedOcr, normalizedQuestion);
-                if (partialScore < 40)
+                var score = ScoreEntry(normalizedOcr, normalizedQuestion, normalizedAnswer, keywords, choices);
+
+                if (score.SkippedByPreFilter)
                 {
                     skippedByPreFilter++;
                     continue;
                 }
-                
                 checkedCount++;
 
-                int tokenScore = Fuzz.TokenSetRatio(normalizedOcr, normalizedQuestion);
-                int weightedScore = Fuzz.WeightedRatio(normalizedOcr, normalizedQuestion);
-                int fuzzyScore = Math.Max(Math.Max(partialScore, tokenScore), weightedScore);
-                
-                int ocrLen = normalizedOcr.Length;
-                int qLen = normalizedQuestion.Length;
-                if (qLen > 0 && ocrLen > qLen * 5)
-                {
-                    double ratio = (double)ocrLen / qLen;
-                    double penalty = Math.Min(0.5, (ratio - 5) * 0.05);
-                    fuzzyScore = (int)(fuzzyScore * (1 - penalty));
-                }
-                
-                int choiceScore = 0;
-                if (choices.Count >= 2)
-                {
-                    foreach (var choice in choices)
-                    {
-                        string normalizedChoice = NormalizeText(choice);
-                        int answerMatch = Fuzz.Ratio(normalizedChoice, normalizedAnswer);
-
-                        if (answerMatch >= 80)
-                        {
-                            int questionContainsChoices = 0;
-                            foreach (var c in choices)
-                            {
-                                if (normalizedQuestion.Contains(NormalizeText(c)))
-                                    questionContainsChoices++;
-                            }
-
-                            if (fuzzyScore >= 60)
-                            {
-                                choiceScore = questionContainsChoices >= 2 
-                                    ? Math.Max(choiceScore, fuzzyScore + 15)
-                                    : Math.Max(choiceScore, fuzzyScore + 10);
-                            }
-                            else
-                            {
-                                choiceScore = Math.Max(choiceScore, 70);
-                            }
-                        }
-                    }
-                }
-                
-                int keywordScore = 0;
-                if (keywords.Count >= 2)
-                {
-                    int matchedKeywords = 0;
-                    foreach (var keyword in keywords)
-                    {
-                        if (normalizedQuestion.Contains(keyword) || normalizedAnswer.Contains(keyword))
-                            matchedKeywords++;
-                    }
-                    
-                    if (keywords.Count > 0)
-                    {
-                        keywordScore = (matchedKeywords * 100) / keywords.Count;
-                        if (keywordScore < 50) keywordScore = 0;
-                    }
-                }
-
-                int finalScore = Math.Max(Math.Max(fuzzyScore, choiceScore), keywordScore);
-                string matchType = finalScore == fuzzyScore ? "Fuzzy" : 
-                                   finalScore == choiceScore ? "Choice" : "Keyword";
+                int finalScore = score.Score;
+                string matchType = score.MatchType;
 
                 // 100% 매칭 발견 시 하이브리드 모드 시작
                 if (finalScore >= 100 && !perfectMatchFound)
@@ -905,7 +867,70 @@ namespace QuizHelper.Services
                     break;
                 }
             }
-            
+
+            // Fallback: 역색인 결과가 부족하면 나머지 항목도 검색
+            if (useIndex && (topCandidates.Count == 0 || topCandidates[0].Score < 70))
+            {
+                Log("[FALLBACK] 역색인 결과 부족, 나머지 항목 검색");
+                var fallbackTargets = _entries.Select((e, i) => (Index: i, Entry: e))
+                    .Where(x => !candidateIndices.Contains(x.Index));
+
+                foreach (var (entryIndex, entry) in fallbackTargets)
+                {
+                    if (answerLengthHint.HasValue)
+                    {
+                        int answerLen = entry.Answer.Replace(" ", "").Length;
+                        if (Math.Abs(answerLen - answerLengthHint.Value) > 1)
+                            continue;
+                    }
+
+                    string normalizedQuestion = NormalizeText(entry.Question);
+                    string normalizedAnswer = NormalizeText(entry.Answer);
+
+                    var score = ScoreEntry(normalizedOcr, normalizedQuestion, normalizedAnswer, keywords, choices);
+
+                    if (score.SkippedByPreFilter)
+                    {
+                        skippedByPreFilter++;
+                        continue;
+                    }
+                    checkedCount++;
+
+                    int finalScore = score.Score;
+                    string matchType = score.MatchType;
+
+                    if (finalScore >= 100 && !perfectMatchFound)
+                    {
+                        perfectMatchFound = true;
+                    }
+
+                    if (finalScore >= 50)
+                    {
+                        if (topCandidates.Count < 10)
+                        {
+                            topCandidates.Add((entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category));
+                        }
+                        else
+                        {
+                            int minIdx = 0;
+                            int minScore = topCandidates[0].Score;
+                            for (int i = 1; i < topCandidates.Count; i++)
+                            {
+                                if (topCandidates[i].Score < minScore)
+                                {
+                                    minScore = topCandidates[i].Score;
+                                    minIdx = i;
+                                }
+                            }
+                            if (finalScore > minScore)
+                            {
+                                topCandidates[minIdx] = (entry.Question, entry.Answer, finalScore, matchType, normalizedQuestion.Length, entry.Category);
+                            }
+                        }
+                    }
+                }
+            }
+
             sw.Stop();
             string indexStatusTopN = useIndex ? $"역색인({candidateIndices.Count})" : "전체검색";
             Log($"[PERF] 매칭 시간: {sw.ElapsedMilliseconds}ms, {indexStatusTopN}, 검사: {checkedCount}/{_entries.Count}, 스킵: {skippedByPreFilter}");
@@ -964,6 +989,110 @@ namespace QuizHelper.Services
         }
         
         /// <summary>
+        /// 개별 항목에 대한 점수 계산 (FindBestMatch/FindTopMatches 공통)
+        /// </summary>
+        private EntryScore ScoreEntry(
+            string normalizedOcr, string normalizedQuestion, string normalizedAnswer,
+            List<string> keywords, List<string> choices)
+        {
+            var result = new EntryScore();
+
+            // === Quick Pre-filtering ===
+            int partialScore = Fuzz.PartialRatio(normalizedOcr, normalizedQuestion);
+            if (partialScore < 40)
+            {
+                result.SkippedByPreFilter = true;
+                return result;
+            }
+
+            // 상세 Fuzzy 계산
+            int tokenScore = Fuzz.TokenSetRatio(normalizedOcr, normalizedQuestion);
+            int weightedScore = Fuzz.WeightedRatio(normalizedOcr, normalizedQuestion);
+            int fuzzyScore = Math.Max(Math.Max(partialScore, tokenScore), weightedScore);
+
+            // 길이 비율 페널티
+            int ocrLen = normalizedOcr.Length;
+            int qLen = normalizedQuestion.Length;
+            if (qLen > 0 && ocrLen > qLen * 5)
+            {
+                double ratio = (double)ocrLen / qLen;
+                double penalty = Math.Min(0.5, (ratio - 5) * 0.05);
+                fuzzyScore = (int)(fuzzyScore * (1 - penalty));
+            }
+
+            // Containment bonus
+            int containmentScore = 0;
+            if (normalizedQuestion.Length >= 5)
+            {
+                if (normalizedOcr.Contains(normalizedQuestion))
+                    containmentScore = 95;
+                else if (normalizedQuestion.Contains(normalizedOcr) && normalizedOcr.Length >= 15)
+                    containmentScore = 90;
+            }
+
+            // Choice-based matching
+            int choiceScore = 0;
+            if (choices.Count >= 2)
+            {
+                foreach (var choice in choices)
+                {
+                    string normalizedChoice = NormalizeText(choice);
+                    int answerMatch = Fuzz.Ratio(normalizedChoice, normalizedAnswer);
+
+                    if (answerMatch >= 80)
+                    {
+                        int questionContainsChoices = 0;
+                        foreach (var c in choices)
+                        {
+                            if (normalizedQuestion.Contains(NormalizeText(c)))
+                                questionContainsChoices++;
+                        }
+
+                        if (fuzzyScore >= 60)
+                        {
+                            choiceScore = questionContainsChoices >= 2
+                                ? Math.Max(choiceScore, fuzzyScore + 15)
+                                : Math.Max(choiceScore, fuzzyScore + 10);
+                        }
+                        else
+                        {
+                            choiceScore = Math.Max(choiceScore, 70);
+                        }
+                    }
+                }
+            }
+
+            // Keyword matching
+            int keywordScore = 0;
+            if (keywords.Count >= 2)
+            {
+                int matchedKeywords = 0;
+                foreach (var keyword in keywords)
+                {
+                    if (normalizedQuestion.Contains(keyword) || normalizedAnswer.Contains(keyword))
+                        matchedKeywords++;
+                }
+
+                if (keywords.Count > 0)
+                {
+                    keywordScore = (matchedKeywords * 100) / keywords.Count;
+                    if (keywordScore < 50) keywordScore = 0;
+                }
+            }
+
+            // Final score = max of all methods
+            int finalScore = Math.Max(Math.Max(Math.Max(fuzzyScore, choiceScore), keywordScore), containmentScore);
+            string matchType = finalScore == containmentScore ? "Contain" :
+                               finalScore == fuzzyScore ? "Fuzzy" :
+                               finalScore == choiceScore ? "Choice" : "Keyword";
+
+            result.Score = finalScore;
+            result.MatchType = matchType;
+            result.SkippedByPreFilter = false;
+            return result;
+        }
+
+        /// <summary>
         /// OCR 텍스트에서 보기(1. xxx 2. xxx 형태)를 추출
         /// </summary>
         private static List<string> ExtractChoices(string text)
@@ -1009,8 +1138,22 @@ namespace QuizHelper.Services
                     keywords.Add(word);
                 }
             }
-            
-            return keywords.Distinct().Take(10).ToList();
+
+            // 영문 단어 추출 (2글자 이상)
+            var engMatches = System.Text.RegularExpressions.Regex.Matches(text.ToLowerInvariant(), @"[a-z]{2,}");
+            foreach (System.Text.RegularExpressions.Match match in engMatches)
+            {
+                keywords.Add(match.Value);
+            }
+
+            // 숫자 추출 (연도 등, 2글자 이상)
+            var numMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\d{2,}");
+            foreach (System.Text.RegularExpressions.Match match in numMatches)
+            {
+                keywords.Add(match.Value);
+            }
+
+            return keywords.Distinct().Take(15).ToList();
         }
         
         /// <summary>
@@ -1018,13 +1161,7 @@ namespace QuizHelper.Services
         /// </summary>
         private static bool IsCommonWord(string word)
         {
-            var commonWords = new HashSet<string>
-            {
-                "것이다", "입니다", "습니다", "한다", "이다", "있다", "없다",
-                "하는", "되는", "있는", "없는", "것은", "것을", "것이",
-                "무엇", "어떤", "다음", "중에서", "가운데", "대한"
-            };
-            return commonWords.Contains(word);
+            return _commonWords.Contains(word);
         }
         
         private static string TruncateForLog(string text, int maxLength)
