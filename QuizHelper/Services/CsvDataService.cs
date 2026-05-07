@@ -277,23 +277,46 @@ namespace QuizHelper.Services
             Log($"[INDEX] 역색인 빌드 완료: {_keywordIndex.Count}개 키워드, {_entries.Count}개 항목, {sw.ElapsedMilliseconds}ms");
         }
 
+        // 끝에서 떼어낼 1글자 조사
+        private static readonly HashSet<char> _josaSuffixes1 = new HashSet<char>
+        {
+            '가', '이', '은', '는', '을', '를', '의', '에', '도', '로'
+        };
+
+        // 끝에서 떼어낼 2글자 조사/어미
+        private static readonly string[] _josaSuffixes2 =
+        {
+            "에서", "으로", "부터", "까지", "에게", "라고", "처럼", "보다"
+        };
+
         /// <summary>
-        /// 인덱싱용 키워드 추출 (2글자 이상 한글 단어)
+        /// 인덱싱용 키워드 추출 (2글자 이상 한글 단어 + 조사 stripping 변형)
         /// </summary>
         private static HashSet<string> ExtractIndexKeywords(string text)
         {
             var keywords = new HashSet<string>();
             if (string.IsNullOrEmpty(text)) return keywords;
-            
+
             // 정규화
             string normalized = text.ToLowerInvariant();
-            
+
             // 한글 단어 추출 (2글자 이상)
             var matches = System.Text.RegularExpressions.Regex.Matches(normalized, @"[가-힣]{2,}");
             foreach (System.Text.RegularExpressions.Match match in matches)
             {
-                if (!IsCommonWord(match.Value))
-                    keywords.Add(match.Value);
+                string word = match.Value;
+                if (IsCommonWord(word)) continue;
+
+                keywords.Add(word);
+
+                // 조사 stripping 변형 추가
+                // - "버즈가" → "버즈", "싱글앨범의" → "싱글앨범", "타이틀곡은" → "타이틀곡"
+                // - 변형이 2글자 이상이고 일반어가 아닐 때만 추가
+                string? variant = StripJosaSuffix(word);
+                if (variant != null && !IsCommonWord(variant))
+                {
+                    keywords.Add(variant);
+                }
             }
 
             // 영문 단어 추출 (2글자 이상)
@@ -302,15 +325,42 @@ namespace QuizHelper.Services
             {
                 keywords.Add(match.Value);
             }
-            
+
             // 숫자 추출 (연도 등)
             var numMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\d{2,}");
             foreach (System.Text.RegularExpressions.Match match in numMatches)
             {
                 keywords.Add(match.Value);
             }
-            
+
             return keywords;
+        }
+
+        /// <summary>
+        /// 끝의 조사를 떼어낸 변형을 반환. 2글자 미만이면 null.
+        /// 2글자 조사를 우선 시도하고, 안 맞으면 1글자 조사 시도.
+        /// </summary>
+        private static string? StripJosaSuffix(string word)
+        {
+            // 2글자 조사 (단어 길이 4 이상이어야 변형이 2글자 이상 남음)
+            if (word.Length >= 4)
+            {
+                foreach (var suffix in _josaSuffixes2)
+                {
+                    if (word.EndsWith(suffix))
+                    {
+                        return word.Substring(0, word.Length - 2);
+                    }
+                }
+            }
+
+            // 1글자 조사 (단어 길이 3 이상이어야 변형이 2글자 이상 남음)
+            if (word.Length >= 3 && _josaSuffixes1.Contains(word[word.Length - 1]))
+            {
+                return word.Substring(0, word.Length - 1);
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -1347,10 +1397,15 @@ namespace QuizHelper.Services
                 }
             }
 
-            // O 또는 ○ 개수로 추정
-            var oMatch = System.Text.RegularExpressions.Regex.Match(text, @"[O○0]{2,}");
+            // O 또는 ○ 개수로 추정 (숫자 0 제외 - "500" 같은 숫자가 오인식되는 것 방지)
+            var oMatch = System.Text.RegularExpressions.Regex.Match(text, @"[O○]{2,}");
             if (oMatch.Success && oMatch.Value.Length >= 2 && oMatch.Value.Length <= 10)
                 return oMatch.Value.Length;
+
+            // OCR이 ○를 0으로 오인식한 경우 - "라 한다" 컨텍스트가 있을 때만 인정
+            var zeroMatch = System.Text.RegularExpressions.Regex.Match(text, @"0{2,}(?=라\s*한다)");
+            if (zeroMatch.Success && zeroMatch.Value.Length >= 2 && zeroMatch.Value.Length <= 10)
+                return zeroMatch.Value.Length;
 
             return null;
         }
