@@ -37,11 +37,19 @@
 
         <!-- Header with Title and Close Button -->
         <Grid x:Name="HeaderPanel" Grid.Row="0" Margin="15,15,15,10">
-            <TextBlock Text="💸"
-                       Foreground="White"
-                       FontSize="16"
-                       FontWeight="SemiBold"
-                       VerticalAlignment="Center"/>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="💸"
+                           Foreground="White"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="v2"
+                           Foreground="#FFB347"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           VerticalAlignment="Top"
+                           Margin="2,2,0,0"/>
+            </StackPanel>
             <Button x:Name="CloseButton"
                     Content="✕"
                     Style="{StaticResource CloseButton}"
