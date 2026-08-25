@@ -43,7 +43,8 @@
                            FontSize="16"
                            FontWeight="SemiBold"
                            VerticalAlignment="Center"/>
-                <TextBlock Text="v2"
+                <TextBlock x:Name="VersionBadge"
+                           Text="v2"
                            Foreground="#FFB347"
                            FontSize="10"
                            FontWeight="Bold"

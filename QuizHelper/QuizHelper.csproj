@@ -9,6 +9,9 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <!-- 진입점을 Program.cs의 Main으로 지정 -->
     <StartupObject>QuizHelper.Program</StartupObject>
+    <!-- Single source of truth for the app version.
+         scripts/build_release.ps1 reads this, and the UI badge shows it at runtime. -->
+    <Version>2.0.2</Version>
   </PropertyGroup>
 
   <!-- Release 빌드 최적화 설정 -->

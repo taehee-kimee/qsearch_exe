@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -36,9 +37,31 @@ namespace QuizHelper
         private const int ScanIntervalMs = 2000; // Scan every 2 seconds
         private const int FuzzyMatchThreshold = 80; // Minimum match score (increased for better accuracy)
 
+        /// <summary>
+        /// Reads the version stamped in from the csproj so the badge always matches
+        /// the released build instead of a hard-coded string.
+        /// </summary>
+        private static string GetVersionLabel()
+        {
+            var info = Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion;
+
+            if (string.IsNullOrWhiteSpace(info))
+                return "v2";
+
+            // strip any build metadata suffix, e.g. "2.0.1+abc1234"
+            var plus = info.IndexOf('+');
+            if (plus > 0)
+                info = info.Substring(0, plus);
+
+            return "v" + info;
+        }
+
         public MainWindow()
         {
             InitializeComponent();
+            VersionBadge.Text = GetVersionLabel();
 
             _ocrService = new OcrService();
             _csvDataService = new CsvDataService();

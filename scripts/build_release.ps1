@@ -1,25 +1,18 @@
 # Build and Release Script for QuizHelper
 
-# Keep in step with the "v<major>" badge in MainWindow.xaml (checked below)
-$version = "2.0.1"
 $scriptDir = $PSScriptRoot
 $projectDir = Join-Path $scriptDir "..\QuizHelper"
 $releaseDir = Join-Path $scriptDir "..\Releases"
 
-# Guard: the release version and the UI badge must agree on the major version,
-# otherwise the shipped build advertises a version the app does not show.
-$badgeMatch = Select-String -Path (Join-Path $projectDir "MainWindow.xaml") -Pattern 'Text="v(\d+)"'
-if (-not $badgeMatch) {
-    Write-Host "Could not find the version badge in MainWindow.xaml" -ForegroundColor Red
+# The version lives in QuizHelper.csproj and nowhere else. The app reads the same
+# value at runtime for its UI badge, so the two cannot drift apart.
+$csprojPath = Join-Path $projectDir "QuizHelper.csproj"
+$versionMatch = Select-String -Path $csprojPath -Pattern '<Version>([^<]+)</Version>'
+if (-not $versionMatch) {
+    Write-Host "No <Version> found in QuizHelper.csproj - set it before releasing." -ForegroundColor Red
     exit 1
 }
-$badgeMajor = $badgeMatch.Matches[0].Groups[1].Value
-$versionMajor = $version.Split('.')[0]
-if ($badgeMajor -ne $versionMajor) {
-    Write-Host "Version mismatch: MainWindow.xaml shows v$badgeMajor but the script version is $version" -ForegroundColor Red
-    Write-Host "Update whichever is wrong before releasing." -ForegroundColor Red
-    exit 1
-}
+$version = $versionMatch.Matches[0].Groups[1].Value.Trim()
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  QuizHelper Release Builder v$version" -ForegroundColor Cyan
