@@ -209,11 +209,14 @@ namespace QuizHelper
                 int count = await _csvDataService.LoadCategoryAsync(categoryName);
                 StatusText.Text = $"상태: 준비됨 ({count}개 문제 로드됨)";
                 UpdateCollectedBadge();
-                
+
                 // Reset result display
                 ClearResultDisplay();
                 ResultText.Text = "🎯 영역 선택 버튼을 클릭하여 시작하세요.";
                 ResultText.Visibility = Visibility.Visible;
+
+                // 웹에 올라간 최신 족보가 있으면 받아서 바로 반영 (기다리지 않고 뒤에서)
+                _ = RefreshFromWebAsync(categoryName, count);
             }
             catch (Exception ex)
             {
@@ -221,6 +224,27 @@ namespace QuizHelper
                 MessageBox.Show($"CSV 데이터 로딩 실패: {ex.Message}", "오류",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+        }
+
+        /// <summary>
+        /// 웹에서 최신 족보를 받아, 바뀌었으면 지금 카테고리를 다시 불러온다.
+        /// 인터넷이 안 되면 조용히 넘어가고 앱에 들어 있는 족보를 그대로 쓴다.
+        /// </summary>
+        private async Task RefreshFromWebAsync(string categoryName, int countBefore)
+        {
+            bool updated = await _csvDataService.RefreshCategoryFromWebAsync(categoryName);
+            if (!updated) return;
+
+            // 그사이 다른 카테고리로 바꿨으면 지금 화면은 건드리지 않음 (다음에 고를 때 반영됨)
+            if (!string.Equals(_csvDataService.CurrentCategory, categoryName, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            int count = await _csvDataService.LoadCategoryAsync(categoryName);
+            int added = count - countBefore;
+            StatusText.Text = added > 0
+                ? $"📚 족보 최신으로 업데이트됨 (+{added}문제, 총 {count}개)"
+                : $"📚 족보 최신으로 업데이트됨 (총 {count}개)";
+            UpdateCollectedBadge();
         }
 
         private void ClearResultDisplay()
