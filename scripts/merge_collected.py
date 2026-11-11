@@ -601,6 +601,37 @@ function filter(v) {{
     ensure_refresh_shortcut()
 
 
+WEB_STATUS_NAME = 'collected-status.json'
+FILE_TO_WEB_SHEET = {v: k for k, v in WEB_SHEET_TO_FILE.items()}
+
+
+def write_web_status(state, pending, review_count):
+    """웹 사이트의 '모은 문제' 페이지가 읽는 공개 현황 파일. 내용이 바뀌었으면 True.
+
+    족보에 이미 들어간 문제와 숫자만 담는다 (확인 전·검토 중인 문제 내용은 공개하지 않음).
+    """
+    history = state.get('merged_history', [])
+    data = {
+        'merged_total': len(history),
+        'last_merge': history[-1]['date'] if history else None,
+        'pending_count': len(pending),
+        'review_count': review_count,
+        'merged': [{'date': e.get('date'), 'sheet': FILE_TO_WEB_SHEET.get(e.get('cat'), e.get('cat')),
+                    'q': e.get('q'), 'a': e.get('a')} for e in reversed(history[-500:])],
+    }
+    text = json.dumps(data, ensure_ascii=False, indent=1) + '\n'
+    path = os.path.join(WEB_REPO, WEB_STATUS_NAME)
+    try:
+        with open(path, encoding='utf-8') as f:
+            if f.read() == text:
+                return False
+    except OSError:
+        pass
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+    return True
+
+
 def ensure_refresh_shortcut():
     """더블클릭하면 최신 현황을 받아 페이지를 여는 파일 (족보는 바꾸지 않는 미리보기 실행)."""
     if os.path.exists(REFRESH_CMD_PATH):
@@ -688,18 +719,8 @@ def main():
         write_report(state, remote_pending, desktop_items, merged_entries, preview=True, planned_reviews=reviews)
         return 0
 
-    if merged_total:
-        for name, rows in to_merge.items():
-            if rows:
-                append_rows(banks[name].path, rows)
-        total = sync_web()
-        log(f'웹 족보 동기화 완료: 총 {total:,}문제')
-
-        summary = ', '.join(f'{n} +{len(r)}' for n, r in to_merge.items() if r)
-        message = f'data: 수집 문제 {merged_total}개 자동 병합 ({summary})'
-        d = commit_and_push(DESKTOP_REPO, ['QuizHelper/data'], message, args.push)
-        w = commit_and_push(WEB_REPO, ['categories', 'metadata.json'], message, args.push)
-        log(f'커밋: 설치형 {"O" if d else "-"}, 웹 {"O" if w else "-"}' + (' (푸시 완료, 웹 사이트 곧 반영)' if args.push else ' (푸시 안 함)'))
+    if merged_entries:
+        state['merged_history'] = (state.get('merged_history', []) + merged_entries)[-5000:]
 
     if reviews:
         new_file = not os.path.exists(REVIEW_PATH)
@@ -710,9 +731,26 @@ def main():
                 f.write(f"{it['cat']}\t{it['q']}\t{it['a']}\t{reason}\t{it['src']}\t{it['note']}\n")
         log(f'검토 필요 항목은 {REVIEW_PATH} 에 추가했습니다.')
 
+    # 웹 '모은 문제' 페이지가 읽는 공개 현황 (족보에 들어간 문제 + 숫자만)
+    status_changed = write_web_status(state, remote_pending, len(read_review_file()))
+
+    if merged_total:
+        for name, rows in to_merge.items():
+            if rows:
+                append_rows(banks[name].path, rows)
+        total = sync_web()
+        log(f'웹 족보 동기화 완료: 총 {total:,}문제')
+
+        summary = ', '.join(f'{n} +{len(r)}' for n, r in to_merge.items() if r)
+        message = f'data: 수집 문제 {merged_total}개 자동 병합 ({summary})'
+        d = commit_and_push(DESKTOP_REPO, ['QuizHelper/data'], message, args.push)
+        w = commit_and_push(WEB_REPO, ['categories', 'metadata.json', WEB_STATUS_NAME], message, args.push)
+        log(f'커밋: 설치형 {"O" if d else "-"}, 웹 {"O" if w else "-"}' + (' (푸시 완료, 웹 사이트 곧 반영)' if args.push else ' (푸시 안 함)'))
+    elif status_changed:
+        commit_and_push(WEB_REPO, [WEB_STATUS_NAME], 'data: 수집 현황 갱신', args.push)
+        log('웹 수집 현황만 갱신')
+
     processed |= done_keys
-    if merged_entries:
-        state['merged_history'] = (state.get('merged_history', []) + merged_entries)[-5000:]
     save_state(state)
     write_report(state, remote_pending, desktop_items, [], preview=False)
 
