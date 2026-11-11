@@ -51,6 +51,8 @@ IMPORTED_DIR = os.path.join(WORK_DIR, 'imported')
 STATE_PATH = os.path.join(WORK_DIR, 'merge_state.json')
 REVIEW_PATH = os.path.join(WORK_DIR, '검토필요.tsv')
 LOG_PATH = os.path.join(WORK_DIR, 'merge_log.txt')
+REPORT_PATH = os.path.join(WORK_DIR, '수집현황.html')
+REFRESH_CMD_PATH = os.path.join(WORK_DIR, '수집현황 새로고침.cmd')
 DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
 REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app/api/collect'
 ADMIN_KEY_FILE = os.environ.get('QH_ADMIN_KEY_FILE') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collect_admin_key.txt')
@@ -446,13 +448,152 @@ def save_state(state):
         json.dump(data, f, ensure_ascii=False, indent=0)
 
 
+# ===== 수집 현황 페이지 =====
+
+def _esc(text):
+    import html
+    return html.escape(str(text if text is not None else ''))
+
+
+def _table(headers, rows, empty):
+    if not rows:
+        return f'<p class="empty">{_esc(empty)}</p>'
+    head = ''.join(f'<th>{_esc(h)}</th>' for h in headers)
+    body = ''.join('<tr>' + ''.join(f'<td>{_esc(c)}</td>' for c in r) + '</tr>' for r in rows)
+    return f'<div class="wrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def read_review_file():
+    rows = []
+    if os.path.exists(REVIEW_PATH):
+        with open(REVIEW_PATH, encoding='utf-8-sig') as f:
+            for i, line in enumerate(f.read().split('\n')):
+                parts = line.rstrip('\r').split('\t')
+                if i == 0 or len(parts) < 4:
+                    continue
+                rows.append(parts + [''] * (6 - len(parts)))
+    return rows
+
+
+def write_report(state, pending, desktop_items, planned, preview):
+    """문서\\QuizHelper 수집\\수집현황.html 을 새로 쓴다."""
+    label = lambda c: CATEGORY_LABELS.get(c, c)
+    history = list(reversed(state.get('merged_history', [])))
+    review = list(reversed(read_review_file()))
+    waiting = sorted(pending.values(), key=lambda e: e.get('first', ''), reverse=True)
+    now = dt.datetime.now()
+
+    def days_ago(iso):
+        try:
+            d = dt.datetime.fromisoformat(iso)
+            return f'{(dt.datetime.now(dt.timezone.utc) - d).days}일 전'
+        except (TypeError, ValueError):
+            return ''
+
+    sections = []
+    if preview and planned:
+        sections.append(('🟡 이번에 합칠 예정 (미리보기라 아직 안 합침)', len(planned), _table(
+            ['카테고리', '질문', '답', '출처'],
+            [(label(e['cat']), e['q'], e['a'], e['src']) for e in planned], '')))
+    sections.append(('✅ 족보에 합쳐진 문제', len(history), _table(
+        ['합친 날', '카테고리', '질문', '답', '출처', '메모'],
+        [(e.get('date', ''), label(e.get('cat')), e.get('q'), e.get('a'), e.get('src'), e.get('note', '')) for e in history],
+        '아직 합쳐진 문제가 없어요.')))
+    sections.append(('⏳ 다른 사용자 확인 대기 (2명이 같은 답을 보내면 합쳐짐)', len(waiting), _table(
+        ['처음 받은 때', '카테고리', '질문', '답', '보낸 사람'],
+        [(days_ago(e.get('first')), label(e.get('cat')), e.get('q'), e.get('a'), f"{len(e.get('sources', []))}명") for e in waiting],
+        f'기다리는 문제가 없어요. ({REMOTE_WAIT_DAYS}일 동안 아무도 확인 안 하면 검토로 넘어가요)')))
+    sections.append(('🔍 검토 필요 (자동으로 넣지 않은 것)', len(review), _table(
+        ['카테고리', '질문', '답', '사유', '출처', '메모'],
+        [(label(r[0]), r[1], r[2], r[3], r[4], r[5]) for r in review],
+        '검토할 문제가 없어요.')))
+    sections.append(('💻 이 PC 설치형 앱이 모은 문제 (원본)', len(desktop_items), _table(
+        ['카테고리', '질문', '답', '메모'],
+        [(label(it['cat']), it['q'], it['a'], it['note']) for it in reversed(desktop_items)],
+        '이 PC 앱이 모은 문제가 아직 없어요.')))
+
+    cards = ''.join(f'<div class="card"><div class="n">{n:,}</div><div class="t">{_esc(t.split(" (")[0])}</div></div>'
+                    for t, n, _ in sections)
+    body = ''.join(f'<section><h2>{_esc(t)} <span class="count">{n:,}</span></h2>{tbl}</section>' for t, n, tbl in sections)
+    page = f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>수집 현황</title>
+<style>
+:root {{ --bg:#f7f7f5; --fg:#1d1d1f; --muted:#6b6b70; --card:#fff; --line:#e4e4e0; --accent:#2f6f4f; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#17181a; --fg:#ececec; --muted:#9a9aa0; --card:#212226; --line:#33343a; --accent:#7bc59b; }} }}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--fg);
+  font:15px/1.5 "Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif; }}
+main {{ max-width:1100px; margin:0 auto; }}
+h1 {{ font-size:22px; margin:0 0 4px; }}
+.sub {{ color:var(--muted); margin:0 0 20px; font-size:13px; }}
+.cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:20px; }}
+.card {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }}
+.card .n {{ font-size:24px; font-weight:700; color:var(--accent); }}
+.card .t {{ font-size:12px; color:var(--muted); }}
+input {{ width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card);
+  color:var(--fg); font:inherit; margin-bottom:8px; }}
+section {{ margin-top:26px; }}
+h2 {{ font-size:16px; margin:0 0 8px; }}
+.count {{ color:var(--muted); font-weight:400; font-size:13px; }}
+.wrap {{ overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--card); }}
+table {{ border-collapse:collapse; width:100%; font-size:13.5px; }}
+th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }}
+th {{ color:var(--muted); font-weight:600; white-space:nowrap; position:sticky; top:0; background:var(--card); }}
+tr:last-child td {{ border-bottom:0; }}
+.empty {{ color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:10px; padding:14px; margin:0; }}
+</style></head>
+<body><main>
+<h1>📥 그깽족보 수집 현황</h1>
+<p class="sub">{now:%Y-%m-%d %H:%M} 기준{' · 미리보기 (족보는 바꾸지 않음)' if preview else ''} · 최신으로 보려면 같은 폴더의 「수집현황 새로고침」을 더블클릭하세요.</p>
+<div class="cards">{cards}</div>
+<input id="q" type="search" placeholder="질문이나 답으로 찾기..." oninput="filter(this.value)">
+{body}
+</main>
+<script>
+function filter(v) {{
+  v = v.trim().toLowerCase();
+  document.querySelectorAll('tbody tr').forEach(function (tr) {{
+    tr.style.display = !v || tr.textContent.toLowerCase().indexOf(v) >= 0 ? '' : 'none';
+  }});
+}}
+</script>
+</body></html>
+"""
+    os.makedirs(WORK_DIR, exist_ok=True)
+    with open(REPORT_PATH, 'w', encoding='utf-8') as f:
+        f.write(page)
+    ensure_refresh_shortcut()
+
+
+def ensure_refresh_shortcut():
+    """더블클릭하면 최신 현황을 받아 페이지를 여는 파일 (족보는 바꾸지 않는 미리보기 실행)."""
+    if os.path.exists(REFRESH_CMD_PATH):
+        return
+    python = sys.executable
+    store_alias = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'WindowsApps', 'python.exe')
+    if 'WindowsApps' in python and os.path.exists(store_alias):
+        python = store_alias
+    script = os.path.abspath(__file__)
+    lines = [
+        '@echo off',
+        'chcp 65001 >nul',
+        'echo 최신 수집 현황을 가져오는 중...',
+        f'"{python}" -I "{script}" --report-only >nul 2>&1',
+        f'start "" "{REPORT_PATH}"',
+    ]
+    with open(REFRESH_CMD_PATH, 'w', encoding='utf-8', newline='\r\n') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
 def main():
     ap = argparse.ArgumentParser(description='수집 문제를 족보에 자동 병합')
     ap.add_argument('--apply', action='store_true', help='족보 파일에 반영')
     ap.add_argument('--push', action='store_true', help='반영 후 두 저장소 커밋·푸시 (--apply 포함)')
     ap.add_argument('--notify-always', action='store_true', help='합칠 게 없어도 끝났다고 알림')
+    ap.add_argument('--report-only', action='store_true', help='수집 현황 페이지만 새로 만듦 (미리보기와 같음)')
     args = ap.parse_args()
-    apply = args.apply or args.push
+    apply = (args.apply or args.push) and not args.report_only
 
     log(f'===== 수집 문제 병합 {dt.datetime.now():%Y-%m-%d %H:%M} ({"푸시" if args.push else "반영" if apply else "미리보기"}) =====')
 
@@ -472,6 +613,8 @@ def main():
     banks = {name: Bank(name) for name in CATEGORIES}
     to_merge = {name: [] for name in CATEGORIES}
     reviews, batch_keys, done_keys = [], set(), set()
+    merged_entries = []
+    today = dt.date.today().isoformat()
 
     for it in fresh:
         state_key = f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}"
@@ -479,6 +622,7 @@ def main():
         if verdict[0] == 'merge':
             _, q, a, note = verdict
             to_merge[it['cat']].append((q, a))
+            merged_entries.append({'date': today, 'cat': it['cat'], 'q': q, 'a': a, 'src': it['src'], 'note': note})
             batch_keys.add((qkey(q), qkey(a)))
             log(f"  + [{it['cat']}] {q[:50]} → {a}" + (f'  ({note})' if note else ''))
             done_keys.add(state_key)
@@ -503,6 +647,7 @@ def main():
 
     if not apply:
         log('미리보기라서 파일은 바꾸지 않았습니다. 반영하려면 --apply 또는 --push')
+        write_report(state, remote_pending, desktop_items, merged_entries, preview=True)
         return 0
 
     if merged_total:
@@ -528,7 +673,10 @@ def main():
         log(f'검토 필요 항목은 {REVIEW_PATH} 에 추가했습니다.')
 
     processed |= done_keys
+    if merged_entries:
+        state['merged_history'] = (state.get('merged_history', []) + merged_entries)[-5000:]
     save_state(state)
+    write_report(state, remote_pending, desktop_items, [], preview=False)
 
     # 처리한 웹 내보내기 파일은 imported 폴더로 옮김
     if web_files:
