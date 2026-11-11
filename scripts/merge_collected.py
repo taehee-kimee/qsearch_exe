@@ -154,7 +154,7 @@ def tidy_text(text, question=False):
         text = re.sub(r'[\s\-–_|>]+$', '', text)  # 답 끝의 "-", "|" 같은 부스러기
     if question:
         # 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
-        text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4]\s*[.,)].*$', r'\1', text)
+        text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4](?:\s*[.,)]|\s).*$', r'\1', text)
         text = re.sub(r'([?？])\s*\S{1,2}$', r'\1', text)
         text = re.sub(r'\s+([?？])', r'\1', text)
     return text
