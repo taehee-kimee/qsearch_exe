@@ -193,6 +193,9 @@ namespace QuizHelper.Services
                 Answer = trueAnswer,
                 Category = _dataService.CurrentCategory!
             });
+
+            // 웹과 같은 공유 서버로 보내 매일 밤 족보에 합쳐지게
+            CollectSync.Enqueue(_dataService.CurrentCategory!, question, trueAnswer, note);
             SessionCount++;
             return item;
         }
