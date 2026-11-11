@@ -60,12 +60,41 @@ OVERLAY_RE = re.compile(r'[:：]\s*\S{0,3}[플폴]레이|(출제자|춘저|수�
 # 한글 사이에 소문자가 섞인 영문 조각 ("원Ai나인"). "비타민A와", "OO", "LG트윈스" 같은 정상 표기는 해당 없음
 SANDWICH_RE = re.compile(r'[가-힣](?:[a-z]{1,2}|[A-Z][a-z])[가-힣]')
 
+CATEGORY_LABELS = {'garosero': '가로세로', 'kkong': '꽁꽁', 'ollaolla': '꼬로록/올라', 'ox_xo': 'OX'}
+
 _log_lines = []
 
 
 def log(msg=''):
-    print(msg)
+    try:
+        print(msg)
+    except UnicodeEncodeError:  # 콘솔 인코딩이 한글을 못 쓰는 경우
+        print(msg.encode('ascii', 'replace').decode())
     _log_lines.append(msg)
+
+
+def notify(title, body):
+    """Windows 알림 (화면 오른쪽 아래). 실패해도 루틴은 계속."""
+    if os.name != 'nt' or os.environ.get('QH_NO_NOTIFY'):
+        return
+    ps = (
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
+        "$x = New-Object Windows.Data.Xml.Dom.XmlDocument;"
+        "$x.LoadXml('<toast><visual><binding template=\"ToastGeneric\"><text></text><text></text></binding></visual></toast>');"
+        "$t = $x.GetElementsByTagName('text');"
+        "$t.Item(0).AppendChild($x.CreateTextNode($env:QH_TITLE)) > $null;"
+        "$t.Item(1).AppendChild($x.CreateTextNode($env:QH_BODY)) > $null;"
+        "$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';"
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))"
+    )
+    env = dict(os.environ, QH_TITLE=title, QH_BODY=body)
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+                       env=env, capture_output=True, timeout=30,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except Exception:
+        pass
 
 
 # ===== 족보 파일 읽기 (앱/웹 로더와 같은 규칙) =====
@@ -325,6 +354,7 @@ def main():
     ap = argparse.ArgumentParser(description='수집 문제를 족보에 자동 병합')
     ap.add_argument('--apply', action='store_true', help='족보 파일에 반영')
     ap.add_argument('--push', action='store_true', help='반영 후 두 저장소 커밋·푸시 (--apply 포함)')
+    ap.add_argument('--notify-always', action='store_true', help='합칠 게 없어도 끝났다고 알림')
     args = ap.parse_args()
     apply = args.apply or args.push
 
@@ -376,11 +406,9 @@ def main():
         log(f'웹 족보 동기화 완료: 총 {total:,}문제')
 
         summary = ', '.join(f'{n} +{len(r)}' for n, r in to_merge.items() if r)
-        trailer = '\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
-        d = commit_and_push(DESKTOP_REPO, ['QuizHelper/data'],
-                            f'data: 수집 문제 {merged_total}개 자동 병합 ({summary}){trailer}', args.push)
-        w = commit_and_push(WEB_REPO, ['categories', 'metadata.json'],
-                            f'data: 수집 문제 {merged_total}개 자동 병합 ({summary}){trailer}', args.push)
+        message = f'data: 수집 문제 {merged_total}개 자동 병합 ({summary})'
+        d = commit_and_push(DESKTOP_REPO, ['QuizHelper/data'], message, args.push)
+        w = commit_and_push(WEB_REPO, ['categories', 'metadata.json'], message, args.push)
         log(f'커밋: 설치형 {"O" if d else "-"}, 웹 {"O" if w else "-"}' + (' (푸시 완료, 웹 사이트 곧 반영)' if args.push else ' (푸시 안 함)'))
 
     if reviews:
@@ -401,14 +429,28 @@ def main():
         for path in web_files:
             shutil.move(path, os.path.join(IMPORTED_DIR, os.path.basename(path)))
 
+    # 끝났다는 알림 (새 항목이 있었을 때, 또는 --notify-always)
+    if merged_total or reviews:
+        lines = []
+        if merged_total:
+            added = ', '.join(f'{CATEGORY_LABELS[n]} +{len(r)}' for n, r in to_merge.items() if r)
+            where = '웹 사이트에 반영됨' if args.push else '아직 GitHub에 안 올림'
+            lines.append(f'{merged_total}문제 추가 ({added}) · {where}')
+        if reviews:
+            lines.append(f'검토 필요 {len(reviews)}개 → 검토필요.tsv')
+        notify('📥 족보 업데이트 완료', '\n'.join(lines))
+    elif args.notify_always:
+        notify('📥 족보 병합 루틴', '새로 합칠 문제가 없었어요')
+
     return 0
 
 
 if __name__ == '__main__':
     try:
         code = main()
-    except Exception as e:  # 예약 실행 중 실패도 로그에 남긴다
+    except Exception as e:  # 예약 실행 중 실패도 로그에 남기고 알린다
         log(f'[실패] {e}')
+        notify('⚠️ 족보 병합 루틴 실패', str(e)[:200])
         code = 1
     finally:
         try:
