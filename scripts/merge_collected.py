@@ -52,6 +52,8 @@ STATE_PATH = os.path.join(WORK_DIR, 'merge_state.json')
 REVIEW_PATH = os.path.join(WORK_DIR, '검토필요.tsv')
 LOG_PATH = os.path.join(WORK_DIR, 'merge_log.txt')
 REPORT_PATH = os.path.join(WORK_DIR, '수집현황.html')
+# 여기 적힌 웹 브라우저(수집기 client id)가 보낸 문제는 1명이어도 바로 합친다 (관리자 본인 브라우저 등)
+TRUSTED_CLIENTS_PATH = os.path.join(WORK_DIR, '믿을수있는_수집자.txt')
 REFRESH_CMD_PATH = os.path.join(WORK_DIR, '수집현황 새로고침.cmd')
 DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
 REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app/api/collect'
@@ -137,6 +139,26 @@ def load_bank(path):
 
 def qkey(s):
     return re.sub(r'[^0-9a-zA-Z가-힣]', '', s).lower()
+
+
+def tidy_text(text, question=False):
+    """OCR이 한글을 한 글자씩 띄어 읽은 것("지 진 계")을 붙이고, 질문 끝 부스러기("…장치는? 게")를 지운다."""
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    tokens = [t for t in text.split(' ') if re.search('[가-힣]', t)]
+    if len(tokens) >= 3 and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
+        text = re.sub(r'([가-힣]) (?=[가-힣](?: |$|[?.,!)]))', r'\1', text)
+    if question:
+        text = re.sub(r'([?？])\s*\S{1,2}$', r'\1', text)
+        text = re.sub(r'\s+([?？])', r'\1', text)
+    return text
+
+
+def load_trusted_clients():
+    try:
+        with open(TRUSTED_CLIENTS_PATH, encoding='utf-8-sig') as f:
+            return {ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith('#')}
+    except OSError:
+        return set()
 
 
 def answer_core(a):
@@ -259,14 +281,17 @@ def fetch_remote(state, apply):
         cursor = body.get('cursor')
 
     now = dt.datetime.now(dt.timezone.utc)
+    trusted = load_trusted_clients()
     for b in new_blobs:
         status, rec = http_json(b['url'])
         if status != 200:
             continue
         source = str(rec.get('source', ''))[:32] or 'unknown'
+        is_trusted = str(rec.get('client', '')) in trusted
         for it in rec.get('items', []):
             cat = WEB_SHEET_TO_FILE.get(it.get('sheet'))
-            q, a = str(it.get('question', '')).strip(), str(it.get('answer', '')).strip()
+            q = tidy_text(it.get('question', ''), question=True)
+            a = tidy_text(it.get('answer', ''))
             if not cat or not q or not a:
                 continue
             k = f'{cat}|{qkey(q)}|{akey(a)}'
@@ -274,14 +299,17 @@ def fetch_remote(state, apply):
                                            'sources': [], 'first': now.isoformat()})
             if source not in entry['sources']:
                 entry['sources'].append(source)
+            if is_trusted:
+                entry['trusted'] = True
         seen.add(b['pathname'])
 
     ready, stale = [], []
     for k, e in list(pending.items()):
         age = (now - dt.datetime.fromisoformat(e['first'])).days
         n = len(e['sources'])
-        item = {'cat': e['cat'], 'q': e['q'], 'a': e['a'], 'note': e['note'], 'src': f'공유({n}명)'}
-        if n >= REMOTE_MIN_SOURCES:
+        src = '공유(내 브라우저)' if e.get('trusted') else f'공유({n}명)'
+        item = {'cat': e['cat'], 'q': e['q'], 'a': e['a'], 'note': e['note'], 'src': src}
+        if n >= REMOTE_MIN_SOURCES or e.get('trusted'):
             ready.append(item)
             del pending[k]
         elif age >= REMOTE_WAIT_DAYS:
@@ -607,6 +635,9 @@ def main():
     web_items, web_files = read_web_exports()
     remote_ready, remote_stale, remote_pending = fetch_remote(state, apply)
     items = desktop_items + web_items + remote_ready
+    for it in items + remote_stale:
+        it['q'] = tidy_text(it['q'], question=True)
+        it['a'] = tidy_text(it['a'])
     fresh = [it for it in items if f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}" not in processed]
     log(f'수집 항목: 설치형 {len(desktop_items)}개, 웹 파일 {len(web_files)}개({len(web_items)}개), 공유 {len(remote_ready)}개 → 새 항목 {len(fresh)}개')
 
