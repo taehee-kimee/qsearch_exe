@@ -14,7 +14,7 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force `
-    -Description "그깽족보: 수집한 문제를 설치형·웹 족보에 합치고 GitHub에 올림. 로그: %APPDATA%\QuizHelper\collected\merge_log.txt" | Out-Null
+    -Description "그깽족보: 수집한 문제를 설치형·웹 족보에 합치고 GitHub에 올림. 로그: 문서\QuizHelper 수집\merge_log.txt" | Out-Null
 
 $info = Get-ScheduledTask -TaskName $taskName | Get-ScheduledTaskInfo
 Write-Host "등록 완료: $taskName (다음 실행: $($info.NextRunTime))" -ForegroundColor Green

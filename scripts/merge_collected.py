@@ -12,7 +12,7 @@
   2. 깨끗한 항목만 골라 qsearch_exe/QuizHelper/data/<카테고리>.csv 에 추가한다
      - 답 끝에 " -수집-" 표시 (앱의 답 복사 시 자동으로 떨어짐)
      - OCR이 받침·자음 하나 틀린 답은 족보에 이미 있는 표기로 고친다 (노량대접 → 노량대첩)
-  3. 애매한 항목은 합치지 않고 %APPDATA%\\QuizHelper\\collected\\검토필요.tsv 에 남긴다
+  3. 애매한 항목은 합치지 않고 문서\\QuizHelper 수집\\검토필요.tsv 에 남긴다 (로그·상태 파일도 같은 폴더)
   4. 합친 족보를 웹(qplay_search/categories)에 복사하고 metadata.json 문제 수를 갱신한다
   5. --push 이면 두 저장소에 커밋·푸시한다 (웹은 푸시 즉시 사이트에 반영)
 
@@ -37,17 +37,20 @@ import subprocess
 import sys
 
 HOME = os.path.expanduser('~')
-# 테스트용으로 경로를 바꿀 수 있다 (QH_DESKTOP_REPO, QH_WEB_REPO, QH_COLLECTED_DIR, QH_DOWNLOADS_GLOB)
+# 테스트용으로 경로를 바꿀 수 있다 (QH_DESKTOP_REPO, QH_WEB_REPO, QH_COLLECTED_DIR, QH_WORK_DIR, QH_DOWNLOADS_GLOB)
 DESKTOP_REPO = os.environ.get('QH_DESKTOP_REPO') or os.path.join(HOME, 'qsearch_exe')
 DATA_DIR = os.path.join(DESKTOP_REPO, 'QuizHelper', 'data')
 WEB_REPO = os.environ.get('QH_WEB_REPO') or os.path.join(HOME, 'Documents', 'GitHub', 'qplay_search')
 WEB_CATEGORIES = os.path.join(WEB_REPO, 'categories')
 WEB_METADATA = os.path.join(WEB_REPO, 'metadata.json')
 COLLECTED_DIR = os.environ.get('QH_COLLECTED_DIR') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collected')
-IMPORTED_DIR = os.path.join(COLLECTED_DIR, 'imported')
-STATE_PATH = os.path.join(COLLECTED_DIR, 'merge_state.json')
-REVIEW_PATH = os.path.join(COLLECTED_DIR, '검토필요.tsv')
-LOG_PATH = os.path.join(COLLECTED_DIR, 'merge_log.txt')
+# 루틴이 쓰는 파일(상태·로그·검토 목록)은 %APPDATA% 밖에 둔다.
+# Microsoft Store 판 Python은 %APPDATA%에 쓰는 파일을 몰래 앱 전용 폴더로 돌려 저장하기 때문.
+WORK_DIR = os.environ.get('QH_WORK_DIR') or os.path.join(HOME, 'Documents', 'QuizHelper 수집')
+IMPORTED_DIR = os.path.join(WORK_DIR, 'imported')
+STATE_PATH = os.path.join(WORK_DIR, 'merge_state.json')
+REVIEW_PATH = os.path.join(WORK_DIR, '검토필요.tsv')
+LOG_PATH = os.path.join(WORK_DIR, 'merge_log.txt')
 DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
 REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app/api/collect'
 ADMIN_KEY_FILE = os.environ.get('QH_ADMIN_KEY_FILE') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collect_admin_key.txt')
@@ -437,7 +440,7 @@ def load_state():
 
 
 def save_state(state):
-    os.makedirs(COLLECTED_DIR, exist_ok=True)
+    os.makedirs(WORK_DIR, exist_ok=True)
     data = dict(state, processed=sorted(state['processed']))
     with open(STATE_PATH, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=0)
@@ -560,7 +563,7 @@ if __name__ == '__main__':
         code = 1
     finally:
         try:
-            os.makedirs(COLLECTED_DIR, exist_ok=True)
+            os.makedirs(WORK_DIR, exist_ok=True)
             with open(LOG_PATH, 'a', encoding='utf-8') as f:
                 f.write('\n'.join(_log_lines) + '\n\n')
         except OSError:
