@@ -145,7 +145,8 @@ def tidy_text(text, question=False):
     """OCR이 한글을 한 글자씩 띄어 읽은 것("지 진 계")을 붙이고, 질문 끝 부스러기("…장치는? 게")를 지운다."""
     text = re.sub(r'\s+', ' ', str(text or '')).strip()
     tokens = [t for t in text.split(' ') if re.search('[가-힣]', t)]
-    if len(tokens) >= 3 and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
+    min_tokens = 3 if question else 2   # 답은 짧으니 "박 쥐"처럼 두 글자도 붙인다
+    if len(tokens) >= min_tokens and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
         text = re.sub(r'([가-힣]) (?=[가-힣](?: |$|[?.,!)]))', r'\1', text)
     if question:
         text = re.sub(r'([?？])\s*\S{1,2}$', r'\1', text)
