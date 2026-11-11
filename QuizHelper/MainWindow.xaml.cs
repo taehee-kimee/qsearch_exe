@@ -18,6 +18,7 @@ namespace QuizHelper
         private readonly OcrService _ocrService;
         private readonly CsvDataService _csvDataService;
         private readonly WindowCaptureService _windowCaptureService;
+        private readonly QuestionCollector _questionCollector;
         private readonly DispatcherTimer _scanTimer;
 
         private BorderWindow? _borderWindow;
@@ -66,6 +67,7 @@ namespace QuizHelper
             _ocrService = new OcrService();
             _csvDataService = new CsvDataService();
             _windowCaptureService = new WindowCaptureService();
+            _questionCollector = new QuestionCollector(_csvDataService);
 
             _scanTimer = new DispatcherTimer
             {
@@ -206,6 +208,7 @@ namespace QuizHelper
                 StatusText.Text = $"상태: {categoryName} 데이터 로딩 중...";
                 int count = await _csvDataService.LoadCategoryAsync(categoryName);
                 StatusText.Text = $"상태: 준비됨 ({count}개 문제 로드됨)";
+                UpdateCollectedBadge();
                 
                 // Reset result display
                 ClearResultDisplay();
@@ -541,11 +544,48 @@ namespace QuizHelper
                     ResultText.Visibility = Visibility.Visible;
                     StatusText.Text = "상태: 스캔 중...";
                 }
+
+                // 족보에 없던 문제 수집 (문제 화면 기억 → 정답 화면에서 답 확정)
+                var collected = _questionCollector.Observe(ocrText, bestMatch);
+                if (collected != null)
+                {
+                    StatusText.Text = $"📥 새 문제 수집: {TruncateText(collected.Question, 20)} → {collected.Answer}";
+                    UpdateCollectedBadge();
+                }
             }
             catch (Exception ex)
             {
                 StatusText.Text = $"상태: 스캔 오류";
                 System.Diagnostics.Debug.WriteLine($"Scan error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 헤더의 📥 배지: 현재 카테고리에 쌓인 수집 문제 수
+        /// </summary>
+        private void UpdateCollectedBadge()
+        {
+            int count = _csvDataService.CollectedCount;
+            CollectedBadge.Text = $"📥 {count}";
+            CollectedBadge.ToolTip = $"족보에 없던 문제를 {count}개 모았어요 (이번 실행: {_questionCollector.SessionCount}개)\n클릭: 수집 폴더 열기";
+            CollectedBadge.Visibility = Visibility.Visible;
+        }
+
+        private void CollectedBadge_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true; // 창 드래그로 넘어가지 않게
+            try
+            {
+                Directory.CreateDirectory(CsvDataService.CollectedFolderPath);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = CsvDataService.CollectedFolderPath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = $"상태: 폴더 열기 실패 ({ex.Message})";
             }
         }
 

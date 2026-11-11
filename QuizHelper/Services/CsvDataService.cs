@@ -163,10 +163,107 @@ namespace QuizHelper.Services
                 await LoadCsvFileAsync(filePath);
             }
 
+            // 직접 수집한 문제 (앱 업데이트와 무관한 사용자 폴더에 저장됨)
+            while (_pendingAdds.TryDequeue(out _)) { } // 파일에 이미 들어 있으므로 대기열은 비움
+            string collectedPath = GetCollectedFilePath(categoryName);
+            int beforeCollected = _entries.Count;
+            if (File.Exists(collectedPath))
+            {
+                await LoadCsvFileAsync(collectedPath);
+            }
+            CollectedCount = _entries.Count - beforeCollected;
+
             // 역색인 빌드
             BuildKeywordIndex();
-            
+
             return _entries.Count;
+        }
+
+        // ===== 수집 문제 지원 =====
+
+        /// <summary>수집한 문제를 저장하는 폴더 (%APPDATA%\QuizHelper\collected)</summary>
+        public static string CollectedFolderPath { get; set; } = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuizHelper", "collected");
+
+        public static string GetCollectedFilePath(string category) =>
+            Path.Combine(CollectedFolderPath, $"{category}.csv");
+
+        /// <summary>현재 카테고리에 들어 있는 수집 문제 수</summary>
+        public int CollectedCount { get; private set; }
+
+        // 검색 중(배경 스레드 포함)에는 _entries를 바꾸지 않도록 보호
+        private readonly System.Threading.ReaderWriterLockSlim _searchLock =
+            new(System.Threading.LockRecursionPolicy.SupportsRecursion);
+        private readonly System.Collections.Concurrent.ConcurrentQueue<QuizEntry> _pendingAdds = new();
+
+        public MatchResult? FindBestMatch(string ocrText, int minimumScore = 80)
+        {
+            FlushPendingAdds();
+            _searchLock.EnterReadLock();
+            try { return FindBestMatchCore(ocrText, minimumScore); }
+            finally { _searchLock.ExitReadLock(); }
+        }
+
+        public SearchResults FindTopMatches(string ocrText, int minimumScore = 80, int maxCount = 3)
+        {
+            _searchLock.EnterReadLock();
+            try { return FindTopMatchesCore(ocrText, minimumScore, maxCount); }
+            finally { _searchLock.ExitReadLock(); }
+        }
+
+        /// <summary>
+        /// 이미 같은 문제·답 쌍이 있는지 (현재 카테고리 + 대기열)
+        /// </summary>
+        public bool ContainsPair(string question, string answer)
+        {
+            string q = NormalizeText(question).Replace(" ", "");
+            var answerKeys = new HashSet<string>(GetAnswerKeys(answer));
+            bool Same(QuizEntry e) =>
+                NormalizeText(e.Question).Replace(" ", "") == q &&
+                GetAnswerKeys(e.Answer).Any(answerKeys.Contains);
+
+            if (_pendingAdds.Any(Same)) return true;
+
+            _searchLock.EnterReadLock();
+            try { return _entries.Any(Same); }
+            finally { _searchLock.ExitReadLock(); }
+        }
+
+        /// <summary>
+        /// 수집한 문제를 검색 대상에 추가 (다음 검색 때 반영)
+        /// </summary>
+        public void QueueCollectedEntry(QuizEntry entry)
+        {
+            if (!string.Equals(entry.Category, CurrentCategory, StringComparison.OrdinalIgnoreCase))
+                return;
+            _pendingAdds.Enqueue(entry);
+            CollectedCount++;
+        }
+
+        /// <summary>
+        /// 대기 중인 수집 문제를 _entries와 역색인에 반영. 다른 검색이 돌고 있으면 다음 기회로 미룬다.
+        /// </summary>
+        private void FlushPendingAdds()
+        {
+            if (_pendingAdds.IsEmpty) return;
+            if (!_searchLock.TryEnterWriteLock(0)) return;
+            try
+            {
+                while (_pendingAdds.TryDequeue(out var entry))
+                {
+                    int idx = _entries.Count;
+                    _entries.Add(entry);
+                    foreach (var keyword in ExtractIndexKeywords(entry.Question).Concat(ExtractIndexKeywords(entry.Answer)))
+                    {
+                        if (!_keywordIndex.TryGetValue(keyword, out var set))
+                            _keywordIndex[keyword] = set = new HashSet<int>();
+                        if (set.Add(idx))
+                            _keywordDocFrequency[keyword] = set.Count;
+                    }
+                    Log($"[COLLECT] 검색 대상에 추가: {TruncateForLog(entry.Question, 40)} -> {entry.Answer}");
+                }
+            }
+            finally { _searchLock.ExitWriteLock(); }
         }
 
         public async Task<int> LoadAllCsvFilesAsync()
@@ -439,7 +536,7 @@ namespace QuizHelper.Services
             return new[] { line };
         }
 
-        public MatchResult? FindBestMatch(string ocrText, int minimumScore = 80)
+        private MatchResult? FindBestMatchCore(string ocrText, int minimumScore = 80)
         {
             if (string.IsNullOrWhiteSpace(ocrText) || _entries.Count == 0)
                 return null;
@@ -750,13 +847,18 @@ namespace QuizHelper.Services
                 Log("[FAIL] 매칭 실패: 후보 없음");
             }
 
+            // 문제 본문이 가려진(검은 줄 등) 경우: 보기만으로 역추적
+            var choiceFallback = FindByChoicesFallback(cleanedText, choices, answerLengthHint);
+            if (choiceFallback.Count > 0)
+                return choiceFallback[0];
+
             return null;
         }
 
         /// <summary>
         /// OCR 텍스트에서 상위 N개 매칭 결과를 반환
         /// </summary>
-        public SearchResults FindTopMatches(string ocrText, int minimumScore = 80, int maxCount = 3)
+        private SearchResults FindTopMatchesCore(string ocrText, int minimumScore = 80, int maxCount = 3)
         {
             var results = new SearchResults();
 
@@ -1035,7 +1137,177 @@ namespace QuizHelper.Services
                 }
             }
 
+            // 문제 본문이 가려진(검은 줄 등) 경우: 보기만으로 역추적
+            if (results.Candidates.Count == 0)
+            {
+                var choiceFallback = FindByChoicesFallback(cleanedText, choices, answerLengthHint);
+                for (int i = 0; i < Math.Min(maxCount, choiceFallback.Count); i++)
+                {
+                    choiceFallback[i].Rank = i + 1;
+                    results.Candidates.Add(choiceFallback[i]);
+                }
+            }
+
             return results;
+        }
+
+        /// <summary>
+        /// 문제 본문이 검은 줄 등으로 가려져 OCR이 깨지거나 사라졌을 때,
+        /// 깨끗하게 읽힌 보기(1~4번)를 정답으로 가진 항목을 역으로 찾는다.
+        /// 본문이 멀쩡한 화면에서는 동작하지 않는다 (DB에 없는 문제를 엉뚱한 답으로 채우지 않기 위해).
+        /// </summary>
+        private List<MatchResult> FindByChoicesFallback(string cleanedText, List<string> choices, int? answerLengthHint)
+        {
+            var results = new List<MatchResult>();
+            // 보기가 2개 이하로만 읽혔으면 진짜 답이 안 보이는 보기일 수 있어 쓰지 않음
+            if (choices.Count < 3) return results;
+
+            // 보기 시작 전까지가 문제 본문
+            var firstChoice = System.Text.RegularExpressions.Regex.Match(cleanedText, @"[1-4]\s*\.\s*\D");
+            string body = firstChoice.Success ? cleanedText.Substring(0, firstChoice.Index) : cleanedText;
+            body = System.Text.RegularExpressions.Regex.Replace(body, @"^\s*[\[<]?\s*문\s*제\s*[^\s\]>]*[\]>]?\s*", "");
+
+            if (!IsQuestionBodyDamaged(body))
+                return results;
+
+            var choiceKeys = choices
+                .Select(c => NormalizeText(c).Replace(" ", ""))
+                .Where(k => k.Length >= 2)
+                .ToList();
+            if (choiceKeys.Count < 2) return results;
+            var choiceJamo = choiceKeys.Select(ToJamo).ToList();
+
+            string normalizedBody = NormalizeText(body);
+            var hits = new List<(QuizEntry Entry, int QuestionSim)>();
+
+            foreach (var entry in _entries)
+            {
+                if (answerLengthHint.HasValue &&
+                    Math.Abs(entry.Answer.Replace(" ", "").Length - answerLengthHint.Value) > 1)
+                    continue;
+
+                bool matched = false;
+                foreach (var answerKey in GetAnswerKeys(entry.Answer))
+                {
+                    for (int i = 0; i < choiceKeys.Count && !matched; i++)
+                    {
+                        if (answerKey == choiceKeys[i])
+                            matched = true;
+                        else if (answerKey.Length >= 3 && choiceKeys[i].Length >= 3 &&
+                                 Math.Abs(answerKey.Length - choiceKeys[i].Length) <= 1 &&
+                                 Fuzz.Ratio(ToJamo(answerKey), choiceJamo[i]) >= 85) // 첩→접 같은 자모 1개 오인식 허용
+                            matched = true;
+                    }
+                    if (matched) break;
+                }
+                if (!matched) continue;
+
+                int questionSim = normalizedBody.Length >= 2
+                    ? Fuzz.PartialRatio(normalizedBody, NormalizeText(entry.Question))
+                    : 0;
+                hits.Add((entry, questionSim));
+            }
+
+            if (hits.Count == 0)
+            {
+                Log("[CHOICE-FALLBACK] 본문 손상 감지, 그러나 보기와 일치하는 정답 없음");
+                return results;
+            }
+
+            // 같은 답끼리 묶고, 남아 있는 본문 조각과 가장 비슷한 질문 순으로 정렬
+            var byAnswer = hits
+                .GroupBy(h => NormalizeText(h.Entry.Answer).Replace(" ", ""))
+                .Select(g => g.OrderByDescending(h => h.QuestionSim).First())
+                .OrderByDescending(h => h.QuestionSim)
+                .ToList();
+
+            int lead = byAnswer.Count > 1 ? byAnswer[0].QuestionSim - byAnswer[1].QuestionSim : 100;
+            for (int i = 0; i < byAnswer.Count; i++)
+            {
+                // 답이 하나뿐이면 85, 여럿이면 본문 조각 유사도 차이만큼 가산 (최대 85)
+                int score = byAnswer.Count == 1 ? 85 : (i == 0 ? 70 + Math.Min(15, lead) : 60);
+                results.Add(new MatchResult
+                {
+                    Question = byAnswer[i].Entry.Question,
+                    Answer = byAnswer[i].Entry.Answer,
+                    Category = byAnswer[i].Entry.Category,
+                    Score = score
+                });
+            }
+
+            Log($"[CHOICE-FALLBACK] 본문 손상 → 보기로 역추적: 후보 답 {byAnswer.Count}개");
+            for (int i = 0; i < Math.Min(3, byAnswer.Count); i++)
+                Log($"  {i + 1}. [본문유사 {byAnswer[i].QuestionSim}%] Q: {TruncateForLog(byAnswer[i].Entry.Question, 40)} -> A: {byAnswer[i].Entry.Answer}");
+
+            return results;
+        }
+
+        /// <summary>
+        /// 문제 본문이 거의 사라졌거나(한글 6자 미만) 깨진 문자 비율이 높으면 손상으로 본다.
+        /// </summary>
+        internal static bool IsQuestionBodyDamaged(string body)
+        {
+            int hangul = System.Text.RegularExpressions.Regex.Matches(body, "[가-힣]").Count;
+            if (hangul < 6) return true;
+
+            string compact = System.Text.RegularExpressions.Regex.Replace(body, @"\s", "");
+            if (compact.Length == 0) return true;
+
+            int garbage = System.Text.RegularExpressions.Regex.Matches(compact,
+                @"[^가-힣a-zA-Z0-9?？.,'""()!~·:%/\-]").Count;
+            return (double)garbage / compact.Length >= 0.12;
+        }
+
+        /// <summary>
+        /// 정답 비교용 키: 원본 + 닉네임/별표/슬래시 꼬리 제거본 (공백 제거, 정규화)
+        /// </summary>
+        internal static IEnumerable<string> GetAnswerKeys(string answer)
+        {
+            string raw = NormalizeText(answer).Replace(" ", "");
+            if (raw.Length >= 2) yield return raw;
+
+            string core = answer;
+            int slash = core.IndexOf('/');
+            if (slash > 0) core = core.Substring(0, slash);
+            int star = core.IndexOfAny(new[] { '★', '☆', '*', '※', '•', '▪', '▫' });
+            if (star > 0) core = core.Substring(0, star);
+            int hyphen = core.IndexOf(" -", StringComparison.Ordinal);
+            if (hyphen > 0) core = core.Substring(0, hyphen);
+
+            string coreKey = NormalizeText(core).Replace(" ", "");
+            if (coreKey.Length >= 2 && coreKey != raw) yield return coreKey;
+
+            // "시너지-닉네임"처럼 공백 없는 하이픈 꼬리
+            int bareHyphen = core.IndexOf('-');
+            if (bareHyphen > 0)
+            {
+                string headKey = NormalizeText(core.Substring(0, bareHyphen)).Replace(" ", "");
+                if (headKey.Length >= 2 && headKey != raw && headKey != coreKey) yield return headKey;
+            }
+        }
+
+        /// <summary>
+        /// 한글 음절을 초/중/종성 자모로 분해 (자모 단위 유사도 비교용)
+        /// </summary>
+        internal static string ToJamo(string text)
+        {
+            var sb = new StringBuilder(text.Length * 3);
+            foreach (char ch in text)
+            {
+                if (ch >= '가' && ch <= '힣')
+                {
+                    int code = ch - 0xAC00;
+                    sb.Append((char)(0x1100 + code / 588));
+                    sb.Append((char)(0x1161 + (code % 588) / 28));
+                    int jong = code % 28;
+                    if (jong > 0) sb.Append((char)(0x11A7 + jong));
+                }
+                else
+                {
+                    sb.Append(ch);
+                }
+            }
+            return sb.ToString();
         }
         
         /// <summary>
@@ -1413,7 +1685,7 @@ namespace QuizHelper.Services
         /// <summary>
         /// 문제 텍스트에서 포맷 텍스트 제거 (질문 핵심부만 추출)
         /// </summary>
-        private static string CleanQuestionText(string text)
+        internal static string CleanQuestionText(string text)
         {
             string result = text;
 
@@ -1447,7 +1719,7 @@ namespace QuizHelper.Services
             return result;
         }
 
-        private static string NormalizeText(string text)
+        internal static string NormalizeText(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return string.Empty;

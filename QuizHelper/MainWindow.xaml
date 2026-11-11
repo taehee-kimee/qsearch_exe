@@ -50,6 +50,15 @@
                            FontWeight="Bold"
                            VerticalAlignment="Top"
                            Margin="2,2,0,0"/>
+                <TextBlock x:Name="CollectedBadge"
+                           Text="📥 0"
+                           Foreground="#88FFFFFF"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           Margin="10,0,0,0"
+                           Cursor="Hand"
+                           Visibility="Collapsed"
+                           MouseLeftButtonDown="CollectedBadge_MouseLeftButtonDown"/>
             </StackPanel>
             <Button x:Name="CloseButton"
                     Content="✕"
