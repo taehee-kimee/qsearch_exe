@@ -426,6 +426,9 @@ def judge(item, bank, batch_keys):
 
     if not q or not a:
         return ('skip', '빈 항목')
+    # 게임 안내 화면("'국어ㆍ영어ㆍ과학' 에 관한 문제입니다.")이 질문으로 잡힌 것 (OCR이 한 글자씩 띄어 읽던 때의 수집 오류)
+    if re.search(r'에관한문제입니다|사용자대기중|오신것을환영', re.sub(r'\s+', '', q)):
+        return ('skip', '게임 안내 화면이 질문으로 잡힘')
     if cat != 'ox_xo' and a.strip().upper() in ('O', 'X'):
         return ('skip', 'OX 답이 다른 카테고리에 있음')
 
