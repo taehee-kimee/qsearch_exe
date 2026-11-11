@@ -1,0 +1,52 @@
+# 웹 '모은 문제' 페이지의 '족보에 바로 반영하기' 버튼이 실행하는 병합 루틴 (PC의 매일 밤 예약과 같은 스크립트)
+# 필요한 저장소 비밀값(Settings → Secrets and variables → Actions):
+#   QH_PUSH_TOKEN       qplay_search 저장소에 푸시할 수 있는 GitHub 토큰
+#   QH_ADMIN_KEY        수집 서버 관리자 키 (%APPDATA%\QuizHelper\collect_admin_key.txt 내용)
+#   QH_TRUSTED_CLIENTS  혼자 보내도 바로 합칠 브라우저 ID (믿을수있는_수집자.txt 내용)
+name: 족보 바로 반영
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: merge-collected
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: qsearch_exe
+      - uses: actions/checkout@v4
+        with:
+          repository: taehee-kimee/qplay_search
+          ref: master
+          path: qplay_search
+          token: ${{ secrets.QH_PUSH_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: git 사용자 설정
+        run: |
+          git config --global user.name "qplay-merge-bot"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: 수집 문제 병합 + 푸시
+        env:
+          QH_CI: '1'
+          QH_NO_NOTIFY: '1'
+          PYTHONIOENCODING: utf-8
+          QH_DESKTOP_REPO: ${{ github.workspace }}/qsearch_exe
+          QH_WEB_REPO: ${{ github.workspace }}/qplay_search
+          QH_WORK_DIR: ${{ runner.temp }}/work
+          QH_COLLECTED_DIR: ${{ runner.temp }}/no-desktop-collected
+          QH_DOWNLOADS_GLOB: ${{ runner.temp }}/no-downloads/*.tsv
+          QH_ADMIN_KEY: ${{ secrets.QH_ADMIN_KEY }}
+          QH_TRUSTED_CLIENTS: ${{ secrets.QH_TRUSTED_CLIENTS }}
+        run: python -I qsearch_exe/scripts/merge_collected.py --push

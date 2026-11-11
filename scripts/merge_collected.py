@@ -58,6 +58,8 @@ REFRESH_CMD_PATH = os.path.join(WORK_DIR, '수집현황 새로고침.cmd')
 DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
 REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app/api/collect'
 ADMIN_KEY_FILE = os.environ.get('QH_ADMIN_KEY_FILE') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collect_admin_key.txt')
+# 클라우드(GitHub Actions '족보 바로 반영')에서 돌 때: 검토 항목은 파일 대신 상태에 쌓아 두고 PC 루틴이 꺼내 간다
+IN_CI = bool(os.environ.get('QH_CI'))
 REMOTE_MIN_SOURCES = 2      # 다른 사람이 보낸 문제는 이만큼 서로 다른 사람이 같은 답을 보내야 합침
 REMOTE_WAIT_DAYS = 14       # 1명만 보낸 문제를 기다리는 기간
 
@@ -167,11 +169,25 @@ def tidy_text(text, question=False):
 
 
 def load_trusted_clients():
+    # 클라우드에서는 GitHub 비밀값 QH_TRUSTED_CLIENTS(쉼표·줄바꿈 구분)로 받는다
+    ids = {x.strip() for x in re.split(r'[,\s]+', os.environ.get('QH_TRUSTED_CLIENTS', '')) if x.strip()}
     try:
         with open(TRUSTED_CLIENTS_PATH, encoding='utf-8-sig') as f:
-            return {ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith('#')}
+            ids |= {ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith('#')}
     except OSError:
-        return set()
+        pass
+    return ids
+
+
+def admin_key():
+    key = os.environ.get('QH_ADMIN_KEY', '').strip()
+    if key:
+        return key
+    try:
+        return open(ADMIN_KEY_FILE, encoding='utf-8').read().strip()
+    except OSError:
+        return ''
+
 
 
 def answer_core(a):
@@ -270,9 +286,8 @@ def fetch_remote(state, apply):
     import urllib.parse
     seen = set(state.get('remote_seen', []))
     pending = dict(state.get('remote_pending', {}))
-    try:
-        key = open(ADMIN_KEY_FILE, encoding='utf-8').read().strip()
-    except OSError:
+    key = admin_key()
+    if not key:
         log('공유 서버: 관리자 키 파일이 없어 건너뜀')
         return [], [], pending
 
@@ -503,21 +518,87 @@ def commit_and_push(repo, paths, message, push):
     return True
 
 
-def load_state():
+def _state_url():
+    import urllib.parse
+    return f"{REMOTE_URL}?{urllib.parse.urlencode({'state': '1', 'key': admin_key()})}"
+
+
+def load_remote_state():
+    """서버에 둔 공유 상태. (상태 dict 또는 None, 읽기 성공 여부)"""
+    if not admin_key():
+        return None, False
+    status, body = http_json(_state_url())
+    if status != 200 or not body.get('ok'):
+        return None, False
+    return body.get('state'), True
+
+
+def save_remote_state(data):
+    import urllib.request
+    import urllib.error
+    if not admin_key():
+        return False
+    req = urllib.request.Request(_state_url(), method='PUT',
+                                 data=json.dumps({'state': data}, ensure_ascii=False).encode('utf-8'),
+                                 headers={'Content-Type': 'application/json', 'User-Agent': 'qplay-merge-routine'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def load_state(apply=False):
+    """PC와 클라우드가 같은 상태를 보도록 서버 상태를 먼저 쓰고, 없으면 PC 파일을 쓴다."""
+    local = None
     try:
         with open(STATE_PATH, encoding='utf-8') as f:
-            state = json.load(f)
+            local = json.load(f)
     except (OSError, ValueError):
-        state = {}
+        pass
+    remote, ok = load_remote_state()
+    if remote is not None:
+        state = remote
+    elif IN_CI and apply:
+        raise RuntimeError('서버의 병합 상태가 없거나 읽지 못해 중단합니다 (관리자 키·네트워크 확인).')
+    else:
+        if apply and not ok:
+            log('공유 서버 상태를 못 읽어 PC 상태 파일로 진행합니다')
+        state = local or {}
     state['processed'] = set(state.get('processed', []))
     return state
 
 
 def save_state(state):
-    os.makedirs(WORK_DIR, exist_ok=True)
     data = dict(state, processed=sorted(state['processed']))
-    with open(STATE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=0)
+    if not IN_CI:
+        os.makedirs(WORK_DIR, exist_ok=True)
+        with open(STATE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=0)
+    if not save_remote_state(data):
+        if IN_CI:
+            raise RuntimeError('서버에 병합 상태를 저장하지 못했습니다.')
+        log('공유 서버에 상태를 저장하지 못했습니다 (다음 실행 때 다시 올림)')
+
+
+def append_reviews(reviews):
+    new_file = not os.path.exists(REVIEW_PATH)
+    os.makedirs(WORK_DIR, exist_ok=True)
+    with open(REVIEW_PATH, 'a', encoding='utf-8-sig' if new_file else 'utf-8') as f:
+        if new_file:
+            f.write('카테고리\t질문\t답\t사유\t출처\t메모\n')
+        for it, reason in reviews:
+            f.write(f"{it['cat']}\t{it['q']}\t{it['a']}\t{reason}\t{it['src']}\t{it.get('note', '')}\n")
+
+
+def drain_review_queue(state):
+    """클라우드 실행이 쌓아 둔 검토 항목을 PC의 검토필요.tsv로 옮긴다."""
+    queue = state.get('review_queue') or []
+    if IN_CI or not queue:
+        return 0
+    append_reviews([(q, q['reason']) for q in queue])
+    state['review_queue'] = []
+    return len(queue)
 
 
 # ===== 수집 현황 페이지 =====
@@ -708,7 +789,7 @@ def main():
         ensure_clean_and_updated(DESKTOP_REPO, 'main')
         ensure_clean_and_updated(WEB_REPO, 'master')
 
-    state = load_state()
+    state = load_state(apply)
     processed = state['processed']
     desktop_items = read_desktop_collected()
     web_items, web_files = read_web_exports()
@@ -763,17 +844,21 @@ def main():
     if merged_entries:
         state['merged_history'] = (state.get('merged_history', []) + merged_entries)[-5000:]
 
-    if reviews:
-        new_file = not os.path.exists(REVIEW_PATH)
-        with open(REVIEW_PATH, 'a', encoding='utf-8-sig' if new_file else 'utf-8') as f:
-            if new_file:
-                f.write('카테고리\t질문\t답\t사유\t출처\t메모\n')
-            for it, reason in reviews:
-                f.write(f"{it['cat']}\t{it['q']}\t{it['a']}\t{reason}\t{it['src']}\t{it['note']}\n")
+    if reviews and IN_CI:
+        state['review_queue'] = (state.get('review_queue') or []) + [
+            {'cat': it['cat'], 'q': it['q'], 'a': it['a'], 'src': it['src'], 'note': it.get('note', ''), 'reason': reason}
+            for it, reason in reviews]
+        log(f'검토 필요 {len(reviews)}개는 다음 PC 루틴 때 검토필요.tsv로 옮겨집니다.')
+    elif reviews:
+        append_reviews(reviews)
         log(f'검토 필요 항목은 {REVIEW_PATH} 에 추가했습니다.')
+    drained = drain_review_queue(state)
+    if drained:
+        log(f'클라우드 실행이 남긴 검토 항목 {drained}개를 검토필요.tsv로 옮겼습니다.')
 
     # 웹 '모은 문제' 페이지가 읽는 공개 현황 (족보에 들어간 문제 + 숫자만)
-    status_changed = write_web_status(state, remote_pending, len(read_review_file()))
+    review_count = len(read_review_file()) + len(state.get('review_queue') or [])
+    status_changed = write_web_status(state, remote_pending, review_count)
 
     if merged_total:
         for name, rows in to_merge.items():
