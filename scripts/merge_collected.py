@@ -504,7 +504,7 @@ def read_review_file():
     return rows
 
 
-def write_report(state, pending, desktop_items, planned, preview):
+def write_report(state, pending, desktop_items, planned, preview, planned_reviews=()):
     """문서\\QuizHelper 수집\\수집현황.html 을 새로 쓴다."""
     label = lambda c: CATEGORY_LABELS.get(c, c)
     history = list(reversed(state.get('merged_history', [])))
@@ -524,6 +524,10 @@ def write_report(state, pending, desktop_items, planned, preview):
         sections.append(('🟡 이번에 합칠 예정 (미리보기라 아직 안 합침)', len(planned), _table(
             ['카테고리', '질문', '답', '출처'],
             [(label(e['cat']), e['q'], e['a'], e['src']) for e in planned], '')))
+    if preview and planned_reviews:
+        sections.append(('🟠 이번에 검토로 보낼 예정 (미리보기)', len(planned_reviews), _table(
+            ['카테고리', '질문', '답', '사유', '출처'],
+            [(label(it['cat']), it['q'], it['a'], reason, it['src']) for it, reason in planned_reviews], '')))
     sections.append(('✅ 족보에 합쳐진 문제', len(history), _table(
         ['합친 날', '카테고리', '질문', '답', '출처', '메모'],
         [(e.get('date', ''), label(e.get('cat')), e.get('q'), e.get('a'), e.get('src'), e.get('note', '')) for e in history],
@@ -679,7 +683,7 @@ def main():
 
     if not apply:
         log('미리보기라서 파일은 바꾸지 않았습니다. 반영하려면 --apply 또는 --push')
-        write_report(state, remote_pending, desktop_items, merged_entries, preview=True)
+        write_report(state, remote_pending, desktop_items, merged_entries, preview=True, planned_reviews=reviews)
         return 0
 
     if merged_total:
