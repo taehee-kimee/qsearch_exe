@@ -1,0 +1,420 @@
+"""수집한 문제를 족보(설치형 + 웹)에 자동으로 합치는 루틴.
+
+읽는 곳
+  - 설치형: %APPDATA%\\QuizHelper\\collected\\<카테고리>.csv   (질문\\t답\\t메모)
+  - 웹:     ~/Downloads/모은문제_*.tsv                      (카테고리\\t질문\\t답\\t메모)
+
+하는 일
+  1. 두 저장소를 최신으로 받는다 (git pull --ff-only)
+  2. 깨끗한 항목만 골라 qsearch_exe/QuizHelper/data/<카테고리>.csv 에 추가한다
+     - 답 끝에 " -수집-" 표시 (앱의 답 복사 시 자동으로 떨어짐)
+     - OCR이 받침·자음 하나 틀린 답은 족보에 이미 있는 표기로 고친다 (노량대접 → 노량대첩)
+  3. 애매한 항목은 합치지 않고 %APPDATA%\\QuizHelper\\collected\\검토필요.tsv 에 남긴다
+  4. 합친 족보를 웹(qplay_search/categories)에 복사하고 metadata.json 문제 수를 갱신한다
+  5. --push 이면 두 저장소에 커밋·푸시한다 (웹은 푸시 즉시 사이트에 반영)
+
+한 번 처리한 항목은 merge_state.json 에 기록해 다시 처리하지 않는다.
+설치형 앱 사용자에게 새 족보를 보내려면 따로 버전을 올려 릴리스해야 한다.
+
+사용법
+  python scripts/merge_collected.py            # 미리보기 (파일을 바꾸지 않음)
+  python scripts/merge_collected.py --apply    # 족보 파일에 반영
+  python scripts/merge_collected.py --push     # 반영 + 두 저장소 커밋/푸시
+"""
+
+import argparse
+import datetime as dt
+import difflib
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser('~')
+# 테스트용으로 경로를 바꿀 수 있다 (QH_DESKTOP_REPO, QH_WEB_REPO, QH_COLLECTED_DIR, QH_DOWNLOADS_GLOB)
+DESKTOP_REPO = os.environ.get('QH_DESKTOP_REPO') or os.path.join(HOME, 'qsearch_exe')
+DATA_DIR = os.path.join(DESKTOP_REPO, 'QuizHelper', 'data')
+WEB_REPO = os.environ.get('QH_WEB_REPO') or os.path.join(HOME, 'Documents', 'GitHub', 'qplay_search')
+WEB_CATEGORIES = os.path.join(WEB_REPO, 'categories')
+WEB_METADATA = os.path.join(WEB_REPO, 'metadata.json')
+COLLECTED_DIR = os.environ.get('QH_COLLECTED_DIR') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collected')
+IMPORTED_DIR = os.path.join(COLLECTED_DIR, 'imported')
+STATE_PATH = os.path.join(COLLECTED_DIR, 'merge_state.json')
+REVIEW_PATH = os.path.join(COLLECTED_DIR, '검토필요.tsv')
+LOG_PATH = os.path.join(COLLECTED_DIR, 'merge_log.txt')
+DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
+
+CATEGORIES = ['garosero', 'kkong', 'ollaolla', 'ox_xo']
+# 웹 카테고리 이름 → 파일 이름
+WEB_SHEET_TO_FILE = {'가로세로': 'garosero', '꽁꽁': 'kkong', '올라올라(꼬로록)': 'ollaolla', 'ox,xo': 'ox_xo'}
+
+COLLECT_TAG = ' -수집-'
+OK_CHARS = r"가-힣a-zA-Z0-9\s?？.,'\"‘’“”()<>\[\]〈〉《》『』「」!~·:%/\-&+=_#"
+GARBAGE_RE = re.compile(f'[^{OK_CHARS}]')
+# 화면의 출제자 표시가 질문 사이에 끼어든 경우 ("…원Ai나인 :큐플레이 분위기…")
+#   "큐플레이"라는 단어 자체는 정상 질문에도 나오므로, 콜론 뒤에 붙은 경우만 본다
+OVERLAY_RE = re.compile(r'[:：]\s*\S{0,3}[플폴]레이|(출제자|춘저|수제자|수세\s*사)\s*[:：]')
+# 한글 사이에 소문자가 섞인 영문 조각 ("원Ai나인"). "비타민A와", "OO", "LG트윈스" 같은 정상 표기는 해당 없음
+SANDWICH_RE = re.compile(r'[가-힣](?:[a-z]{1,2}|[A-Z][a-z])[가-힣]')
+
+_log_lines = []
+
+
+def log(msg=''):
+    print(msg)
+    _log_lines.append(msg)
+
+
+# ===== 족보 파일 읽기 (앱/웹 로더와 같은 규칙) =====
+
+def load_bank(path):
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding='utf-8-sig') as f:
+        for i, line in enumerate(f.read().split('\n')):
+            line = line.rstrip('\r')
+            if not line.strip():
+                continue
+            if i == 0 and re.search(r'question|answer|질문', line, re.I):
+                continue
+            if '\t' in line:
+                q, a = line.split('\t')[:2]
+            else:
+                k = line.rfind('?')
+                if k < 0:
+                    continue
+                q, a = line[:k + 1], line[k + 1:]
+            q, a = q.strip(), a.strip()
+            if q and a:
+                rows.append((q, a))
+    return rows
+
+
+def qkey(s):
+    return re.sub(r'[^0-9a-zA-Z가-힣]', '', s).lower()
+
+
+def answer_core(a):
+    """닉네임·별표 꼬리를 뗀 순수 답"""
+    a = a.split('/')[0]
+    a = re.split(r'[★☆*※•▪▫]', a)[0]
+    a = re.split(r'\s-', a)[0]
+    return a.strip()
+
+
+def akey(a):
+    return qkey(answer_core(a))
+
+
+def to_jamo(text):
+    out = []
+    for ch in text:
+        c = ord(ch) - 0xAC00
+        if 0 <= c <= 11171:
+            out.append(chr(0x1100 + c // 588))
+            out.append(chr(0x1161 + (c % 588) // 28))
+            if c % 28:
+                out.append(chr(0x11A7 + c % 28))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def jamo_ratio(a, b):
+    return difflib.SequenceMatcher(None, to_jamo(a), to_jamo(b)).ratio() * 100
+
+
+def garbage_ratio(s):
+    compact = re.sub(r'\s', '', s)
+    if not compact:
+        return 1.0
+    return len(GARBAGE_RE.findall(compact)) / len(compact)
+
+
+# ===== 수집 항목 읽기 =====
+
+def read_desktop_collected():
+    items = []
+    for name in CATEGORIES:
+        path = os.path.join(COLLECTED_DIR, f'{name}.csv')
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding='utf-8-sig') as f:
+            for i, line in enumerate(f.read().split('\n')):
+                line = line.rstrip('\r')
+                if not line.strip() or i == 0:
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    items.append({'cat': name, 'q': parts[0].strip(), 'a': parts[1].strip(),
+                                  'note': parts[2].strip() if len(parts) > 2 else '', 'src': '설치형'})
+    return items
+
+
+def read_web_exports():
+    items, files = [], sorted(glob.glob(DOWNLOADS_GLOB))
+    for path in files:
+        with open(path, encoding='utf-8-sig') as f:
+            for i, line in enumerate(f.read().split('\n')):
+                line = line.rstrip('\r')
+                if not line.strip() or i == 0:
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 3 and parts[0].strip() in WEB_SHEET_TO_FILE:
+                    items.append({'cat': WEB_SHEET_TO_FILE[parts[0].strip()], 'q': parts[1].strip(),
+                                  'a': parts[2].strip(), 'note': parts[3].strip() if len(parts) > 3 else '',
+                                  'src': '웹'})
+    return items, files
+
+
+# ===== 판정 =====
+
+class Bank:
+    def __init__(self, name):
+        self.name = name
+        self.path = os.path.join(DATA_DIR, f'{name}.csv')
+        self.rows = load_bank(self.path)
+        self.by_q = {}
+        for q, a in self.rows:
+            self.by_q.setdefault(qkey(q), []).append(a)
+        # 답 표기 사전: 정규화 키 → 대표 표기
+        self.answers = {}
+        for _, a in self.rows:
+            k = akey(a)
+            if len(k) >= 2 and k not in self.answers:
+                self.answers[k] = answer_core(a)
+        self.answers_by_len = {}
+        for k in self.answers:
+            self.answers_by_len.setdefault(len(k), []).append(k)
+
+    def known_spelling(self, answer):
+        """족보에 있는 표기로 교정. (교정된 답, 교정 여부)"""
+        k = qkey(answer)
+        if k in self.answers:
+            return answer, False
+        if len(k) < 3:
+            return answer, False
+        best, best_score, second = None, 0, 0
+        for n in (len(k) - 1, len(k), len(k) + 1):
+            for cand in self.answers_by_len.get(n, []):
+                s = jamo_ratio(k, cand)
+                if s > best_score:
+                    best, second, best_score = cand, best_score, s
+                elif s > second:
+                    second = s
+        if best and best_score >= 85 and best_score - second >= 5:
+            return self.answers[best], True
+        return answer, False
+
+
+def judge(item, bank, batch_keys):
+    """('merge', 질문, 답, 메모) | ('review', 사유) | ('skip', 사유)"""
+    q, a, cat = item['q'], item['a'], item['cat']
+
+    if not q or not a:
+        return ('skip', '빈 항목')
+    if cat != 'ox_xo' and a.strip().upper() in ('O', 'X'):
+        return ('skip', 'OX 답이 다른 카테고리에 있음')
+
+    core = answer_core(a)
+    if len(core) > 40:
+        return ('review', '답이 너무 김')
+    if garbage_ratio(core) > 0:
+        return ('review', '답에 깨진 글자')
+
+    hidden = q.startswith('(가려진 문제)')
+    if not hidden and garbage_ratio(q) >= 0.05:
+        return ('review', '질문에 깨진 글자 (OCR 잡음)')
+    if not hidden and OVERLAY_RE.search(q):
+        return ('review', '출제자 이름이 질문에 섞임 (OCR 잡음)')
+    if not hidden and SANDWICH_RE.search(q):
+        return ('review', '한글 사이에 영문 조각 (OCR 잡음)')
+    if not hidden and len(qkey(q)) < 5:
+        return ('review', '질문이 너무 짧음')
+
+    fixed, corrected = bank.known_spelling(core)
+    k_q, k_a = qkey(q), qkey(fixed)
+
+    existing = bank.by_q.get(k_q, [])
+    if any(akey(e) == k_a for e in existing):
+        return ('skip', '이미 족보에 있음')
+    if existing:
+        return ('review', f'같은 질문의 족보 답이 다름: {existing[0]}')
+    if (k_q, k_a) in batch_keys:
+        return ('skip', '이번 묶음에서 중복')
+    if len(qkey(fixed)) <= 2 and qkey(fixed) not in bank.answers and cat != 'ox_xo':
+        return ('review', '두 글자 이하 새 답 (OCR 오인식 확인 필요)')
+
+    note = f'자동교정 {core}→{fixed}' if corrected else ''
+    return ('merge', q, fixed, note)
+
+
+# ===== 반영 =====
+
+def append_rows(path, rows):
+    raw = open(path, 'rb').read() if os.path.exists(path) else b'Question\tAnswer\r\n'
+    nl = b'\r\n' if b'\r\n' in raw else b'\n'
+    if not raw.endswith(nl):
+        raw += nl
+    raw += b''.join(f'{q}\t{a}{COLLECT_TAG}'.encode('utf-8') + nl for q, a in rows)
+    with open(path, 'wb') as f:
+        f.write(raw)
+
+
+def sync_web():
+    for name in CATEGORIES:
+        shutil.copyfile(os.path.join(DATA_DIR, f'{name}.csv'), os.path.join(WEB_CATEGORIES, f'{name}.csv'))
+    with open(WEB_METADATA, encoding='utf-8') as f:
+        meta = json.load(f)
+    total = 0
+    for c in meta['categories']:
+        c['count'] = len(load_bank(os.path.join(WEB_REPO, c['file'])))
+        total += c['count']
+    meta['total_items'] = total
+    meta['generated_at'] = dt.date.today().isoformat()
+    with open(WEB_METADATA, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    return total
+
+
+def git(repo, *args, check=True):
+    r = subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True, encoding='utf-8')
+    if check and r.returncode != 0:
+        raise RuntimeError(f'git {" ".join(args)} 실패 ({repo}): {r.stderr.strip()}')
+    return r.stdout.strip()
+
+
+def ensure_clean_and_updated(repo, branch):
+    if git(repo, 'status', '--porcelain', '--untracked-files=no'):
+        raise RuntimeError(f'{repo} 에 커밋 안 된 변경이 있어 건너뜁니다. 정리 후 다시 실행하세요.')
+    current = git(repo, 'branch', '--show-current')
+    if current != branch:
+        raise RuntimeError(f'{repo} 가 {branch} 브랜치가 아닙니다 (현재 {current}).')
+    git(repo, 'pull', '--ff-only', '-q')
+
+
+def commit_and_push(repo, paths, message, push):
+    git(repo, 'add', *paths)
+    if not git(repo, 'diff', '--cached', '--name-only'):
+        return False
+    git(repo, 'commit', '-q', '-m', message)
+    if push:
+        git(repo, 'push', '-q')
+    return True
+
+
+def load_state():
+    try:
+        with open(STATE_PATH, encoding='utf-8') as f:
+            return set(json.load(f).get('processed', []))
+    except (OSError, ValueError):
+        return set()
+
+
+def save_state(processed):
+    os.makedirs(COLLECTED_DIR, exist_ok=True)
+    with open(STATE_PATH, 'w', encoding='utf-8') as f:
+        json.dump({'processed': sorted(processed)}, f, ensure_ascii=False, indent=0)
+
+
+def main():
+    ap = argparse.ArgumentParser(description='수집 문제를 족보에 자동 병합')
+    ap.add_argument('--apply', action='store_true', help='족보 파일에 반영')
+    ap.add_argument('--push', action='store_true', help='반영 후 두 저장소 커밋·푸시 (--apply 포함)')
+    args = ap.parse_args()
+    apply = args.apply or args.push
+
+    log(f'===== 수집 문제 병합 {dt.datetime.now():%Y-%m-%d %H:%M} ({"푸시" if args.push else "반영" if apply else "미리보기"}) =====')
+
+    if apply:
+        ensure_clean_and_updated(DESKTOP_REPO, 'main')
+        ensure_clean_and_updated(WEB_REPO, 'master')
+
+    desktop_items = read_desktop_collected()
+    web_items, web_files = read_web_exports()
+    items = desktop_items + web_items
+    processed = load_state()
+    fresh = [it for it in items if f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}" not in processed]
+    log(f'수집 항목: 설치형 {len(desktop_items)}개, 웹 파일 {len(web_files)}개({len(web_items)}개) → 새 항목 {len(fresh)}개')
+
+    banks = {name: Bank(name) for name in CATEGORIES}
+    to_merge = {name: [] for name in CATEGORIES}
+    reviews, batch_keys, done_keys = [], set(), set()
+
+    for it in fresh:
+        state_key = f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}"
+        verdict = judge(it, banks[it['cat']], batch_keys)
+        if verdict[0] == 'merge':
+            _, q, a, note = verdict
+            to_merge[it['cat']].append((q, a))
+            batch_keys.add((qkey(q), qkey(a)))
+            log(f"  + [{it['cat']}] {q[:50]} → {a}" + (f'  ({note})' if note else ''))
+            done_keys.add(state_key)
+        elif verdict[0] == 'review':
+            reviews.append((it, verdict[1]))
+            log(f"  ? [{it['cat']}] {it['q'][:50]} → {it['a']}  ({verdict[1]})")
+            done_keys.add(state_key)  # 검토 파일로 넘겼으니 다시 처리하지 않음
+        else:
+            done_keys.add(state_key)
+
+    merged_total = sum(len(v) for v in to_merge.values())
+    log(f'합칠 항목 {merged_total}개, 검토 필요 {len(reviews)}개')
+
+    if not apply:
+        log('미리보기라서 파일은 바꾸지 않았습니다. 반영하려면 --apply 또는 --push')
+        return 0
+
+    if merged_total:
+        for name, rows in to_merge.items():
+            if rows:
+                append_rows(banks[name].path, rows)
+        total = sync_web()
+        log(f'웹 족보 동기화 완료: 총 {total:,}문제')
+
+        summary = ', '.join(f'{n} +{len(r)}' for n, r in to_merge.items() if r)
+        trailer = '\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+        d = commit_and_push(DESKTOP_REPO, ['QuizHelper/data'],
+                            f'data: 수집 문제 {merged_total}개 자동 병합 ({summary}){trailer}', args.push)
+        w = commit_and_push(WEB_REPO, ['categories', 'metadata.json'],
+                            f'data: 수집 문제 {merged_total}개 자동 병합 ({summary}){trailer}', args.push)
+        log(f'커밋: 설치형 {"O" if d else "-"}, 웹 {"O" if w else "-"}' + (' (푸시 완료, 웹 사이트 곧 반영)' if args.push else ' (푸시 안 함)'))
+
+    if reviews:
+        new_file = not os.path.exists(REVIEW_PATH)
+        with open(REVIEW_PATH, 'a', encoding='utf-8-sig' if new_file else 'utf-8') as f:
+            if new_file:
+                f.write('카테고리\t질문\t답\t사유\t출처\t메모\n')
+            for it, reason in reviews:
+                f.write(f"{it['cat']}\t{it['q']}\t{it['a']}\t{reason}\t{it['src']}\t{it['note']}\n")
+        log(f'검토 필요 항목은 {REVIEW_PATH} 에 추가했습니다.')
+
+    processed |= done_keys
+    save_state(processed)
+
+    # 처리한 웹 내보내기 파일은 imported 폴더로 옮김
+    if web_files:
+        os.makedirs(IMPORTED_DIR, exist_ok=True)
+        for path in web_files:
+            shutil.move(path, os.path.join(IMPORTED_DIR, os.path.basename(path)))
+
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        code = main()
+    except Exception as e:  # 예약 실행 중 실패도 로그에 남긴다
+        log(f'[실패] {e}')
+        code = 1
+    finally:
+        try:
+            os.makedirs(COLLECTED_DIR, exist_ok=True)
+            with open(LOG_PATH, 'a', encoding='utf-8') as f:
+                f.write('\n'.join(_log_lines) + '\n\n')
+        except OSError:
+            pass
+    sys.exit(code)
