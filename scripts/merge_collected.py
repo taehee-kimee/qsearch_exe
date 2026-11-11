@@ -148,6 +148,10 @@ def tidy_text(text, question=False):
     min_tokens = 3 if question else 2   # 답은 짧으니 "박 쥐"처럼 두 글자도 붙인다
     if len(tokens) >= min_tokens and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
         text = re.sub(r'([가-힣]) (?=[가-힣](?: |$|[?.,!)]))', r'\1', text)
+        # "1 8 6 7" → "1867"
+        text = re.sub(r'(^|\s)(\d(?:\s\d)+)(?=\s|$|[가-힣])', lambda m: m.group(1) + m.group(2).replace(' ', ''), text)
+    if not question:
+        text = re.sub(r'[\s\-–_|>]+$', '', text)  # 답 끝의 "-", "|" 같은 부스러기
     if question:
         # 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
         text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4]\s*[.,)].*$', r'\1', text)
