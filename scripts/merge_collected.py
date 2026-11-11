@@ -3,6 +3,9 @@
 읽는 곳
   - 설치형: %APPDATA%\\QuizHelper\\collected\\<카테고리>.csv   (질문\\t답\\t메모)
   - 웹:     ~/Downloads/모은문제_*.tsv                      (카테고리\\t질문\\t답\\t메모)
+  - 공유:   https://qplay-search.vercel.app/api/collect      (모든 웹 사용자가 보낸 수집분)
+            다른 사람이 보낸 문제는 서로 다른 2명 이상이 같은 답을 보내야 자동으로 합친다.
+            1명만 보낸 문제는 기다렸다가 14일이 지나면 검토필요.tsv 로 넘긴다.
 
 하는 일
   1. 두 저장소를 최신으로 받는다 (git pull --ff-only)
@@ -46,6 +49,10 @@ STATE_PATH = os.path.join(COLLECTED_DIR, 'merge_state.json')
 REVIEW_PATH = os.path.join(COLLECTED_DIR, '검토필요.tsv')
 LOG_PATH = os.path.join(COLLECTED_DIR, 'merge_log.txt')
 DOWNLOADS_GLOB = os.environ.get('QH_DOWNLOADS_GLOB') or os.path.join(HOME, 'Downloads', '모은문제_*.tsv')
+REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app/api/collect'
+ADMIN_KEY_FILE = os.environ.get('QH_ADMIN_KEY_FILE') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collect_admin_key.txt')
+REMOTE_MIN_SOURCES = 2      # 다른 사람이 보낸 문제는 이만큼 서로 다른 사람이 같은 답을 보내야 합침
+REMOTE_WAIT_DAYS = 14       # 1명만 보낸 문제를 기다리는 기간
 
 CATEGORIES = ['garosero', 'kkong', 'ollaolla', 'ox_xo']
 # 웹 카테고리 이름 → 파일 이름
@@ -200,6 +207,89 @@ def read_web_exports():
     return items, files
 
 
+# ===== 공유 서버 (모든 웹 사용자 수집분) =====
+
+def http_json(url, timeout=30):
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, headers={'User-Agent': 'qplay-merge-routine'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode('utf-8'))
+        except ValueError:
+            return e.code, {}
+    except Exception as e:  # 네트워크 오류
+        return 0, {'error': str(e)}
+
+
+def fetch_remote(state, apply):
+    """서버의 새 제출을 읽어 대기 목록에 쌓고, 합칠 준비가 된 항목과 검토로 넘길 항목을 돌려준다."""
+    import urllib.parse
+    seen = set(state.get('remote_seen', []))
+    pending = dict(state.get('remote_pending', {}))
+    try:
+        key = open(ADMIN_KEY_FILE, encoding='utf-8').read().strip()
+    except OSError:
+        log('공유 서버: 관리자 키 파일이 없어 건너뜀')
+        return [], [], pending
+
+    new_blobs, cursor = [], None
+    while True:
+        query = {'key': key}
+        if cursor:
+            query['cursor'] = cursor
+        status, body = http_json(f'{REMOTE_URL}?{urllib.parse.urlencode(query)}')
+        if status == 503:
+            log('공유 서버: 저장소(Vercel Blob)가 아직 연결되지 않아 건너뜀')
+            return [], [], pending
+        if status != 200 or not body.get('ok'):
+            log(f'공유 서버: 읽기 실패 ({status} {body.get("error", "")})')
+            return [], [], pending
+        new_blobs += [b for b in body.get('blobs', []) if b['pathname'] not in seen]
+        if not body.get('hasMore'):
+            break
+        cursor = body.get('cursor')
+
+    now = dt.datetime.now(dt.timezone.utc)
+    for b in new_blobs:
+        status, rec = http_json(b['url'])
+        if status != 200:
+            continue
+        source = str(rec.get('source', ''))[:32] or 'unknown'
+        for it in rec.get('items', []):
+            cat = WEB_SHEET_TO_FILE.get(it.get('sheet'))
+            q, a = str(it.get('question', '')).strip(), str(it.get('answer', '')).strip()
+            if not cat or not q or not a:
+                continue
+            k = f'{cat}|{qkey(q)}|{akey(a)}'
+            entry = pending.setdefault(k, {'cat': cat, 'q': q, 'a': a, 'note': str(it.get('note', ''))[:80],
+                                           'sources': [], 'first': now.isoformat()})
+            if source not in entry['sources']:
+                entry['sources'].append(source)
+        seen.add(b['pathname'])
+
+    ready, stale = [], []
+    for k, e in list(pending.items()):
+        age = (now - dt.datetime.fromisoformat(e['first'])).days
+        n = len(e['sources'])
+        item = {'cat': e['cat'], 'q': e['q'], 'a': e['a'], 'note': e['note'], 'src': f'공유({n}명)'}
+        if n >= REMOTE_MIN_SOURCES:
+            ready.append(item)
+            del pending[k]
+        elif age >= REMOTE_WAIT_DAYS:
+            stale.append(item)
+            del pending[k]
+
+    log(f'공유 서버: 새 제출 {len(new_blobs)}건 → 합칠 준비 {len(ready)}개, 1명만 보내 대기 중 {len(pending)}개')
+    if apply:
+        state['remote_seen'] = sorted(seen)
+        state['remote_pending'] = pending
+    return ready, stale, pending
+
+
 # ===== 판정 =====
 
 class Bank:
@@ -339,15 +429,18 @@ def commit_and_push(repo, paths, message, push):
 def load_state():
     try:
         with open(STATE_PATH, encoding='utf-8') as f:
-            return set(json.load(f).get('processed', []))
+            state = json.load(f)
     except (OSError, ValueError):
-        return set()
+        state = {}
+    state['processed'] = set(state.get('processed', []))
+    return state
 
 
-def save_state(processed):
+def save_state(state):
     os.makedirs(COLLECTED_DIR, exist_ok=True)
+    data = dict(state, processed=sorted(state['processed']))
     with open(STATE_PATH, 'w', encoding='utf-8') as f:
-        json.dump({'processed': sorted(processed)}, f, ensure_ascii=False, indent=0)
+        json.dump(data, f, ensure_ascii=False, indent=0)
 
 
 def main():
@@ -364,12 +457,14 @@ def main():
         ensure_clean_and_updated(DESKTOP_REPO, 'main')
         ensure_clean_and_updated(WEB_REPO, 'master')
 
+    state = load_state()
+    processed = state['processed']
     desktop_items = read_desktop_collected()
     web_items, web_files = read_web_exports()
-    items = desktop_items + web_items
-    processed = load_state()
+    remote_ready, remote_stale, remote_pending = fetch_remote(state, apply)
+    items = desktop_items + web_items + remote_ready
     fresh = [it for it in items if f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}" not in processed]
-    log(f'수집 항목: 설치형 {len(desktop_items)}개, 웹 파일 {len(web_files)}개({len(web_items)}개) → 새 항목 {len(fresh)}개')
+    log(f'수집 항목: 설치형 {len(desktop_items)}개, 웹 파일 {len(web_files)}개({len(web_items)}개), 공유 {len(remote_ready)}개 → 새 항목 {len(fresh)}개')
 
     banks = {name: Bank(name) for name in CATEGORIES}
     to_merge = {name: [] for name in CATEGORIES}
@@ -390,6 +485,15 @@ def main():
             done_keys.add(state_key)  # 검토 파일로 넘겼으니 다시 처리하지 않음
         else:
             done_keys.add(state_key)
+
+    # 1명만 보낸 채 오래 기다린 공유 항목은 검토로
+    for it in remote_stale:
+        state_key = f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}"
+        if state_key in processed:
+            continue
+        reviews.append((it, f'1명만 보냄 ({REMOTE_WAIT_DAYS}일 동안 확인 안 됨)'))
+        log(f"  ? [{it['cat']}] {it['q'][:50]} → {it['a']}  (1명만 보냄)")
+        done_keys.add(state_key)
 
     merged_total = sum(len(v) for v in to_merge.values())
     log(f'합칠 항목 {merged_total}개, 검토 필요 {len(reviews)}개')
@@ -421,7 +525,7 @@ def main():
         log(f'검토 필요 항목은 {REVIEW_PATH} 에 추가했습니다.')
 
     processed |= done_keys
-    save_state(processed)
+    save_state(state)
 
     # 처리한 웹 내보내기 파일은 imported 폴더로 옮김
     if web_files:
@@ -438,6 +542,8 @@ def main():
             lines.append(f'{merged_total}문제 추가 ({added}) · {where}')
         if reviews:
             lines.append(f'검토 필요 {len(reviews)}개 → 검토필요.tsv')
+        if remote_pending:
+            lines.append(f'다른 사용자 확인 대기 {len(remote_pending)}개')
         notify('📥 족보 업데이트 완료', '\n'.join(lines))
     elif args.notify_always:
         notify('📥 족보 병합 루틴', '새로 합칠 문제가 없었어요')
