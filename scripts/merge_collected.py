@@ -295,12 +295,16 @@ def fetch_remote(state, apply):
 
     now = dt.datetime.now(dt.timezone.utc)
     trusted = load_trusted_clients()
+    # 보낸 순서대로 처리해야 '보냄 → 지움(취소) → 다시 모음'이 올바르게 반영된다 (파일 이름 = 날짜/밀리초)
+    new_blobs.sort(key=lambda b: b['pathname'])
+    retracted = 0
     for b in new_blobs:
         status, rec = http_json(b['url'])
         if status != 200:
             continue
         source = str(rec.get('source', ''))[:32] or 'unknown'
         is_trusted = str(rec.get('client', '')) in trusted
+        is_retract = rec.get('retract') is True
         for it in rec.get('items', []):
             cat = WEB_SHEET_TO_FILE.get(it.get('sheet'))
             q = tidy_text(it.get('question', ''), question=True)
@@ -308,6 +312,18 @@ def fetch_remote(state, apply):
             if not cat or not q or not a:
                 continue
             k = f'{cat}|{qkey(q)}|{akey(a)}'
+            if is_retract:
+                # 사용자가 '모은 문제'에서 지움 → 그 사람이 보낸 몫만 취소 (다른 사람 제출은 그대로)
+                entry = pending.get(k)
+                if entry:
+                    if source in entry['sources']:
+                        entry['sources'].remove(source)
+                    if is_trusted:
+                        entry.pop('trusted', None)
+                    if not entry['sources']:
+                        del pending[k]
+                    retracted += 1
+                continue
             entry = pending.setdefault(k, {'cat': cat, 'q': q, 'a': a, 'note': str(it.get('note', ''))[:80],
                                            'sources': [], 'first': now.isoformat()})
             if source not in entry['sources']:
@@ -329,7 +345,8 @@ def fetch_remote(state, apply):
             stale.append(item)
             del pending[k]
 
-    log(f'공유 서버: 새 제출 {len(new_blobs)}건 → 합칠 준비 {len(ready)}개, 1명만 보내 대기 중 {len(pending)}개')
+    log(f'공유 서버: 새 제출 {len(new_blobs)}건 → 합칠 준비 {len(ready)}개, 1명만 보내 대기 중 {len(pending)}개'
+        + (f', 지워서 취소 {retracted}개' if retracted else ''))
     if apply:
         state['remote_seen'] = sorted(seen)
         state['remote_pending'] = pending
