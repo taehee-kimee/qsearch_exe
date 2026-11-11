@@ -1,4 +1,4 @@
-# 수집 문제 족보 병합 루틴을 Windows 작업 스케줄러에 등록합니다.
+﻿# 수집 문제 족보 병합 루틴을 Windows 작업 스케줄러에 등록합니다.
 # 매일 23:30 실행 (그 시간에 PC가 꺼져 있었으면 다음에 켰을 때 실행)
 # 해제: Unregister-ScheduledTask -TaskName 'QuizHelper 수집문제 족보병합' -Confirm:$false
 
