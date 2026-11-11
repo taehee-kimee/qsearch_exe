@@ -157,11 +157,14 @@ namespace QuizHelper.Services
                 return 0;
             }
 
-            string filePath = Path.Combine(_dataFolderPath, $"{categoryName}.csv");
+            // 웹에서 받아 둔 최신 족보가 있으면 그걸, 없으면 앱에 들어 있는 족보를 쓴다
+            string filePath = ResolveCategoryPath(categoryName, out bool fromWeb);
+            DataSource = fromWeb ? "web" : "bundled";
             if (File.Exists(filePath))
             {
                 await LoadCsvFileAsync(filePath);
             }
+            Log($"[DATA] {categoryName}: {(fromWeb ? "웹 최신 족보" : "앱 기본 족보")} 사용, {_entries.Count}개");
 
             // 직접 수집한 문제 (앱 업데이트와 무관한 사용자 폴더에 저장됨)
             while (_pendingAdds.TryDequeue(out _)) { } // 파일에 이미 들어 있으므로 대기열은 비움
@@ -177,6 +180,129 @@ namespace QuizHelper.Services
             BuildKeywordIndex();
 
             return _entries.Count;
+        }
+
+        // ===== 웹 최신 족보 =====
+        // 족보는 매일 밤 수집 문제가 합쳐져 웹 사이트에 올라간다. 설치형도 릴리스 없이 그걸 받아 쓴다.
+
+        /// <summary>웹 족보 파일 주소 (카테고리 이름.csv 가 붙는다)</summary>
+        public static string WebDataBaseUrl { get; set; } = "https://taehee-kimee.github.io/qplay_search/categories/";
+
+        /// <summary>받아 둔 웹 족보 보관 폴더 (%APPDATA%\QuizHelper\data_cache) — 앱 업데이트와 무관</summary>
+        public static string DataCacheFolder { get; set; } = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "QuizHelper", "data_cache");
+
+        /// <summary>현재 카테고리를 어디서 읽었는지 ("web" / "bundled")</summary>
+        public string DataSource { get; private set; } = "bundled";
+
+        private static readonly System.Net.Http.HttpClient _http = CreateHttpClient();
+
+        private static System.Net.Http.HttpClient CreateHttpClient()
+        {
+            var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("QuizHelper-Desktop");
+            return client;
+        }
+
+        private string BundledPath(string categoryName) => Path.Combine(_dataFolderPath, $"{categoryName}.csv");
+        private static string CachePath(string categoryName) => Path.Combine(DataCacheFolder, $"{categoryName}.csv");
+
+        private string ResolveCategoryPath(string categoryName, out bool fromWeb)
+        {
+            string cached = CachePath(categoryName);
+            string bundled = BundledPath(categoryName);
+            fromWeb = File.Exists(cached) && LooksComplete(CountDataLines(File.ReadAllText(cached, Encoding.UTF8)), bundled);
+            return fromWeb ? cached : bundled;
+        }
+
+        private static int CountDataLines(string text)
+        {
+            int count = 0;
+            foreach (var line in text.Split('\n'))
+            {
+                if (line.Contains('\t') || line.Contains('?')) count++;
+            }
+            return count;
+        }
+
+        /// <summary>받은 파일이 잘리거나 엉뚱한 내용이 아닌지: 앱 기본 족보의 90% 이상이어야 쓴다</summary>
+        private static bool LooksComplete(int lines, string bundledPath)
+        {
+            if (lines < 100) return false;
+            if (!File.Exists(bundledPath)) return true;
+            int bundledLines = CountDataLines(File.ReadAllText(bundledPath, Encoding.UTF8));
+            return lines >= bundledLines * 0.9;
+        }
+
+        /// <summary>
+        /// 웹에서 최신 족보를 받아 보관 폴더에 저장. 바뀐 내용이 있으면 true (그 카테고리를 다시 불러오면 반영됨).
+        /// 인터넷이 안 되거나 받은 파일이 이상하면 아무것도 바꾸지 않고 false.
+        /// </summary>
+        public async Task<bool> RefreshCategoryFromWebAsync(string categoryName)
+        {
+            try
+            {
+                Directory.CreateDirectory(DataCacheFolder);
+                string cached = CachePath(categoryName);
+                string etagPath = cached + ".etag";
+
+                using var request = new System.Net.Http.HttpRequestMessage(
+                    System.Net.Http.HttpMethod.Get, WebDataBaseUrl + Uri.EscapeDataString(categoryName) + ".csv");
+                if (File.Exists(cached) && File.Exists(etagPath))
+                {
+                    string etag = File.ReadAllText(etagPath).Trim();
+                    if (etag.Length > 0)
+                        request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+                }
+
+                using var response = await _http.SendAsync(request);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotModified)
+                {
+                    Log($"[DATA] {categoryName}: 웹 족보 변경 없음");
+                    return false;
+                }
+                if (!response.IsSuccessStatusCode)
+                {
+                    Log($"[DATA] {categoryName}: 웹 족보 받기 실패 ({(int)response.StatusCode})");
+                    return false;
+                }
+
+                byte[] bytes = await response.Content.ReadAsByteArrayAsync();
+                string text = Encoding.UTF8.GetString(bytes);
+                if (!LooksComplete(CountDataLines(text), BundledPath(categoryName)))
+                {
+                    Log($"[DATA] {categoryName}: 받은 족보가 너무 짧아 무시");
+                    return false;
+                }
+
+                if (File.Exists(cached) && File.ReadAllBytes(cached).AsSpan().SequenceEqual(bytes))
+                {
+                    SaveEtag(etagPath, response);
+                    return false;
+                }
+
+                string temp = cached + ".tmp";
+                await File.WriteAllBytesAsync(temp, bytes);
+                File.Move(temp, cached, overwrite: true);
+                SaveEtag(etagPath, response);
+                Log($"[DATA] {categoryName}: 웹 최신 족보 받음 ({CountDataLines(text)}줄)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"[DATA] {categoryName}: 웹 족보 받기 오류 ({ex.Message})");
+                return false;
+            }
+        }
+
+        private static void SaveEtag(string etagPath, System.Net.Http.HttpResponseMessage response)
+        {
+            try
+            {
+                var etag = response.Headers.ETag?.Tag;
+                if (!string.IsNullOrEmpty(etag)) File.WriteAllText(etagPath, etag);
+            }
+            catch { /* ETag 저장 실패는 다음에 다시 받으면 그만 */ }
         }
 
         // ===== 수집 문제 지원 =====
