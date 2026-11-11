@@ -147,6 +147,8 @@ def tidy_text(text, question=False):
     """OCR이 한글을 한 글자씩 띄어 읽은 것("지 진 계")을 붙이고, 질문 끝 부스러기("…장치는? 게")를 지운다."""
     text = re.sub(r'\s+', ' ', str(text or '')).strip()
     if question:
+        # "[문제 5]" 표시의 꼬리만 남은 경우 ("5] 고구려 고분벽화에…")
+        text = re.sub(r'^\d{1,2}\s*[\]>|]\s*', '', text)
         # 붙이기 전에 먼저: 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
         text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4](?:\s*[.,)]|\s).*$', r'\1', text)
     tokens = [t for t in text.split(' ') if re.search('[가-힣]', t)]
