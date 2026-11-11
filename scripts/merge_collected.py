@@ -144,20 +144,26 @@ def qkey(s):
 def tidy_text(text, question=False):
     """OCR이 한글을 한 글자씩 띄어 읽은 것("지 진 계")을 붙이고, 질문 끝 부스러기("…장치는? 게")를 지운다."""
     text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if question:
+        # 붙이기 전에 먼저: 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
+        text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4](?:\s*[.,)]|\s).*$', r'\1', text)
     tokens = [t for t in text.split(' ') if re.search('[가-힣]', t)]
     min_tokens = 3 if question else 2   # 답은 짧으니 "박 쥐"처럼 두 글자도 붙인다
     if len(tokens) >= min_tokens and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
         text = re.sub(r'([가-힣]) (?=[가-힣](?: |$|[?.,!)]))', r'\1', text)
         # "1 8 6 7" → "1867"
         text = re.sub(r'(^|\s)(\d(?:\s\d)+)(?=\s|$|[가-힣])', lambda m: m.group(1) + m.group(2).replace(' ', ''), text)
+    # 기호 주변 공백 ("티그리스 , 유프라테스" → "티그리스, 유프라테스", "( 독일전 )" → "(독일전)", "' 푸른바다 '" → "'푸른바다'")
+    text = re.sub(r'\s+([,)\]])', r'\1', text)
+    text = re.sub(r'([(\[])\s+', r'\1', text)
+    text = re.sub(r"'\s*([^']*?)\s*'", r"'\1'", text)
     if not question:
         text = re.sub(r'[\s\-–_|>]+$', '', text)  # 답 끝의 "-", "|" 같은 부스러기
     if question:
-        # 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
-        text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4](?:\s*[.,)]|\s).*$', r'\1', text)
-        text = re.sub(r'([?？])\s*\S{1,2}$', r'\1', text)
+        # 물음표 뒤 짧은 부스러기 ("…쓰는것은? 로 Q")
+        text = re.sub(r'([?？])\s*(?:\S\s*){1,4}$', r'\1', text)
         text = re.sub(r'\s+([?？])', r'\1', text)
-    return text
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def load_trusted_clients():
@@ -349,13 +355,21 @@ class Bank:
         self.answers_by_len = {}
         for k in self.answers:
             self.answers_by_len.setdefault(len(k), []).append(k)
+        # 답 → 그 답을 가진 질문들 (교정이 맞는지 확인용)
+        self.questions_by_answer = {}
+        for q, a in self.rows:
+            self.questions_by_answer.setdefault(akey(a), []).append(qkey(q))
 
-    def known_spelling(self, answer):
-        """족보에 있는 표기로 교정. (교정된 답, 교정 여부)"""
+    def known_spelling(self, answer, question):
+        """족보에 있는 표기로 교정. (교정된 답, 교정 여부)
+
+        비슷한 철자의 다른 단어로 잘못 바꾸지 않도록(리소좀→리포좀), 족보에서 그 표기를 답으로 가진
+        질문이 지금 질문과 비슷할 때만 고친다.
+        """
         k = qkey(answer)
         if k in self.answers:
             return answer, False
-        if len(k) < 3:
+        if len(k) < 3 or question.startswith('(가려진 문제)'):
             return answer, False
         best, best_score, second = None, 0, 0
         for n in (len(k) - 1, len(k), len(k) + 1):
@@ -366,7 +380,11 @@ class Bank:
                 elif s > second:
                     second = s
         if best and best_score >= 85 and best_score - second >= 5:
-            return self.answers[best], True
+            qk_now = qkey(question)
+            related = any(difflib.SequenceMatcher(None, qk_now, other).ratio() >= 0.55
+                          for other in self.questions_by_answer.get(best, []))
+            if related:
+                return self.answers[best], True
         return answer, False
 
 
@@ -392,10 +410,12 @@ def judge(item, bank, batch_keys):
         return ('review', '출제자 이름이 질문에 섞임 (OCR 잡음)')
     if not hidden and SANDWICH_RE.search(q):
         return ('review', '한글 사이에 영문 조각 (OCR 잡음)')
+    if re.search(r'[|©®¦]', q) or re.search(r'[|©®¦]', a):
+        return ('review', 'OCR 잡음 기호(| © 등)')
     if not hidden and len(qkey(q)) < 5:
         return ('review', '질문이 너무 짧음')
 
-    fixed, corrected = bank.known_spelling(core)
+    fixed, corrected = bank.known_spelling(core, q)
     k_q, k_a = qkey(q), qkey(fixed)
 
     existing = bank.by_q.get(k_q, [])
