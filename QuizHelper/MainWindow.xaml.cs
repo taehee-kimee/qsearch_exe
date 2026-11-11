@@ -83,6 +83,9 @@ namespace QuizHelper
         {
             await InitializeCategoriesAsync();
             LoadLastWindowSettings();
+
+            // 예전에 못 보낸 모은 문제가 있으면 공유 서버로 다시 보내기
+            _ = CollectSync.FlushAsync();
         }
 
         /// <summary>
@@ -591,25 +594,22 @@ namespace QuizHelper
         {
             int count = _csvDataService.CollectedCount;
             CollectedBadge.Text = $"📥 {count}";
-            CollectedBadge.ToolTip = $"족보에 없던 문제를 {count}개 모았어요 (이번 실행: {_questionCollector.SessionCount}개)\n클릭: 수집 폴더 열기";
+            CollectedBadge.ToolTip = $"족보에 없던 문제를 {count}개 모았어요 (이번 실행: {_questionCollector.SessionCount}개)\n클릭: 모은 문제 보기";
             CollectedBadge.Visibility = Visibility.Visible;
         }
 
-        private void CollectedBadge_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        private async void CollectedBadge_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
             e.Handled = true; // 창 드래그로 넘어가지 않게
             try
             {
-                Directory.CreateDirectory(CsvDataService.CollectedFolderPath);
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = CsvDataService.CollectedFolderPath,
-                    UseShellExecute = true
-                });
+                StatusText.Text = "상태: 모은 문제 페이지 여는 중...";
+                await CollectedPage.OpenAsync(); // 웹 족보의 '모은 문제' 페이지와 같은 화면을 기본 브라우저로
+                StatusText.Text = "상태: 준비됨";
             }
             catch (Exception ex)
             {
-                StatusText.Text = $"상태: 폴더 열기 실패 ({ex.Message})";
+                StatusText.Text = $"상태: 모은 문제 페이지 열기 실패 ({ex.Message})";
             }
         }
 
