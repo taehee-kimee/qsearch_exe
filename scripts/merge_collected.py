@@ -149,6 +149,8 @@ def tidy_text(text, question=False):
     if len(tokens) >= min_tokens and sum(1 for t in tokens if re.fullmatch('[가-힣]', t)) / len(tokens) >= 0.6:
         text = re.sub(r'([가-힣]) (?=[가-힣](?: |$|[?.,!)]))', r'\1', text)
     if question:
+        # 물음표 뒤에 보기가 통째로 붙어 온 경우("…대회는? 메 1. 1972 뮌헨 2. …") 물음표까지만
+        text = re.sub(r'([?？])\s*\S{0,2}\s*[1-4]\s*[.,)].*$', r'\1', text)
         text = re.sub(r'([?？])\s*\S{1,2}$', r'\1', text)
         text = re.sub(r'\s+([?？])', r'\1', text)
     return text
