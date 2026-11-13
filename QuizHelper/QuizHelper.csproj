@@ -11,7 +11,7 @@
     <StartupObject>QuizHelper.Program</StartupObject>
     <!-- Single source of truth for the app version.
          scripts/build_release.ps1 reads this, and the UI badge shows it at runtime. -->
-    <Version>2.0.5</Version>
+    <Version>2.0.6</Version>
   </PropertyGroup>
 
   <!-- Release 빌드 최적화 설정 -->

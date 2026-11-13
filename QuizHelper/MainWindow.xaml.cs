@@ -20,6 +20,7 @@ namespace QuizHelper
         private readonly WindowCaptureService _windowCaptureService;
         private readonly QuestionCollector _questionCollector;
         private readonly DispatcherTimer _scanTimer;
+        private readonly DispatcherTimer _webRefreshTimer;
 
         private BorderWindow? _borderWindow;
         private System.Drawing.Rectangle _captureRegion;
@@ -74,6 +75,16 @@ namespace QuizHelper
                 Interval = TimeSpan.FromMilliseconds(ScanIntervalMs)
             };
             _scanTimer.Tick += ScanTimer_Tick;
+
+            // 앱을 켜 둔 채로 족보가 갱신돼도 반영되게, 10분마다 웹 족보를 다시 확인 (바뀐 게 없으면 304로 끝)
+            _webRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(10) };
+            _webRefreshTimer.Tick += (s, e) =>
+            {
+                string? category = _csvDataService.CurrentCategory;
+                if (!string.IsNullOrEmpty(category))
+                    _ = RefreshFromWebAsync(category, _csvDataService.QuestionCount);
+            };
+            _webRefreshTimer.Start();
 
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
