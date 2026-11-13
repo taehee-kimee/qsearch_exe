@@ -127,7 +127,7 @@
                     [mergedMine, '그중 족보에 반영됨'],
                     [PAGE.pending, '서버 전송 대기'],
                     [status ? status.merged_total : '-', '족보에 추가된 수집 문제 (전체)'],
-                    [status ? status.pending_count : '-', '다른 사용자 확인 대기']
+                    [status ? status.pending_count : '-', '족보 반영 대기']
                 ].map(function (c) {
                     return '<div class="cc-card"><div class="n">' + esc(c[0]) + '</div><div class="t">' + esc(c[1]) + '</div></div>';
                 }).join('');
@@ -145,7 +145,7 @@
                     }))
                     : '<div class="cc-empty">' + (status ? '아직 족보에 합쳐진 수집 문제가 없어요. 모인 문제는 매일 밤 합쳐집니다.' : '족보 반영 현황을 불러오지 못했어요. 인터넷 연결을 확인해 주세요.') + '</div>';
                 document.getElementById('mergedNote').textContent = status
-                    ? '마지막 합친 날: ' + (status.last_merge || '아직 없음') + ' · 다른 사람이 보낸 문제는 2명 이상이 같은 답을 보내야 합쳐져요.'
+                    ? '마지막 합친 날: ' + (status.last_merge || '아직 없음') + ' · 보낸 문제는 매일 밤 족보에 합쳐져요.'
                     : '';
                 applyFilter();
             }

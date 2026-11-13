@@ -4,7 +4,7 @@
   - 설치형: %APPDATA%\\QuizHelper\\collected\\<카테고리>.csv   (질문\\t답\\t메모)
   - 웹:     ~/Downloads/모은문제_*.tsv                      (카테고리\\t질문\\t답\\t메모)
   - 공유:   https://qplay-search.vercel.app/api/collect      (모든 웹 사용자가 보낸 수집분)
-            다른 사람이 보낸 문제는 서로 다른 2명 이상이 같은 답을 보내야 자동으로 합친다.
+            보낸 문제는 1명만 보내도 바로 합친다 (REMOTE_MIN_SOURCES).
             1명만 보낸 문제는 기다렸다가 14일이 지나면 검토필요.tsv 로 넘긴다.
 
 하는 일
@@ -60,7 +60,7 @@ REMOTE_URL = os.environ.get('QH_REMOTE_URL') or 'https://qplay-search.vercel.app
 ADMIN_KEY_FILE = os.environ.get('QH_ADMIN_KEY_FILE') or os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'collect_admin_key.txt')
 # 클라우드(GitHub Actions '족보 바로 반영')에서 돌 때: 검토 항목은 파일 대신 상태에 쌓아 두고 PC 루틴이 꺼내 간다
 IN_CI = bool(os.environ.get('QH_CI'))
-REMOTE_MIN_SOURCES = 2      # 다른 사람이 보낸 문제는 이만큼 서로 다른 사람이 같은 답을 보내야 합침
+REMOTE_MIN_SOURCES = 1      # 이만큼 서로 다른 사람이 같은 답을 보내야 합침 (2026-11-13부터 1명이면 바로 합침)
 REMOTE_WAIT_DAYS = 14       # 1명만 보낸 문제를 기다리는 기간
 
 CATEGORIES = ['garosero', 'kkong', 'ollaolla', 'ox_xo']
@@ -661,7 +661,7 @@ def write_report(state, pending, desktop_items, planned, preview, planned_review
         ['합친 날', '카테고리', '질문', '답', '출처', '메모'],
         [(e.get('date', ''), label(e.get('cat')), e.get('q'), e.get('a'), e.get('src'), e.get('note', '')) for e in history],
         '아직 합쳐진 문제가 없어요.')))
-    sections.append(('⏳ 다른 사용자 확인 대기 (2명이 같은 답을 보내면 합쳐짐)', len(waiting), _table(
+    sections.append(('⏳ 족보 반영 대기', len(waiting), _table(
         ['처음 받은 때', '카테고리', '질문', '답', '보낸 사람'],
         [(days_ago(e.get('first')), label(e.get('cat')), e.get('q'), e.get('a'), f"{len(e.get('sources', []))}명") for e in waiting],
         f'기다리는 문제가 없어요. ({REMOTE_WAIT_DAYS}일 동안 아무도 확인 안 하면 검토로 넘어가요)')))
@@ -901,7 +901,7 @@ def main():
         if reviews:
             lines.append(f'검토 필요 {len(reviews)}개 → 검토필요.tsv')
         if remote_pending:
-            lines.append(f'다른 사용자 확인 대기 {len(remote_pending)}개')
+            lines.append(f'족보 반영 대기 {len(remote_pending)}개')
         notify('📥 족보 업데이트 완료', '\n'.join(lines))
     elif args.notify_always:
         notify('📥 족보 병합 루틴', '새로 합칠 문제가 없었어요')
