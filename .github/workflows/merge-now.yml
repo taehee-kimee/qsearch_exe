@@ -3,6 +3,7 @@
 #   QH_PUSH_TOKEN       qplay_search 저장소에 푸시할 수 있는 GitHub 토큰
 #   QH_ADMIN_KEY        수집 서버 관리자 키 (%APPDATA%\QuizHelper\collect_admin_key.txt 내용)
 #   QH_TRUSTED_CLIENTS  혼자 보내도 바로 합칠 브라우저 ID (믿을수있는_수집자.txt 내용)
+#   QH_TYPESAFE_KEY     (선택) 합치기 전 답 짝·문제 글 점검용 TypeSafe 키. 없으면 점검 없이 합침
 name: 족보 바로 반영
 
 on:
@@ -49,4 +50,5 @@ jobs:
           QH_DOWNLOADS_GLOB: ${{ runner.temp }}/no-downloads/*.tsv
           QH_ADMIN_KEY: ${{ secrets.QH_ADMIN_KEY }}
           QH_TRUSTED_CLIENTS: ${{ secrets.QH_TRUSTED_CLIENTS }}
+          QH_TYPESAFE_KEY: ${{ secrets.QH_TYPESAFE_KEY }}
         run: python -I qsearch_exe/scripts/merge_collected.py --push

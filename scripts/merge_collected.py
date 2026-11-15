@@ -431,6 +431,9 @@ def judge(item, bank, batch_keys):
     # 게임 안내 화면("'국어ㆍ영어ㆍ과학' 에 관한 문제입니다.")이 질문으로 잡힌 것 (OCR이 한 글자씩 띄어 읽던 때의 수집 오류)
     if re.search(r'에관한문제입니다|사용자대기중|오신것을환영', re.sub(r'\s+', '', q)):
         return ('skip', '게임 안내 화면이 질문으로 잡힘')
+    # 대기실·프로필·길드 화면 글자 ("계임해벨 조회수: 0000000445 하준", "길드정보 길드원 방명록")
+    if re.search(r'[게계][임인][래레러해]벨|조회수|길드정보|길드원|방명록|입은옷보기|엠블럼|닉네임|사이버머니|사용자초대|블[랙택]리스트', re.sub(r'\s+', '', q)):
+        return ('skip', '게임 화면 글자가 질문으로 잡힘')
     if cat != 'ox_xo' and a.strip().upper() in ('O', 'X'):
         return ('skip', 'OX 답이 다른 카테고리에 있음')
 
@@ -467,6 +470,65 @@ def judge(item, bank, batch_keys):
 
     note = f'자동교정 {core}→{fixed}' if corrected else ''
     return ('merge', q, fixed, note)
+
+
+# ===== 답 짝 점검 (Jev) =====
+# 글자 점검(judge)은 깨진 글자만 본다. "국경일이 아닌 것은? → 반복 재생산"처럼 글자는 멀쩡한데 짝이 엉뚱한 답은
+# 그대로 들어가서, 합치기 직전에 Jev에게 "이 답이 이 문제의 정답으로 맞는가"를 묻고 낮으면 검토로 돌린다.
+# 기준 0.3 (2026-11-15 측정: 맞는 짝을 잘못 의심 주관식 3%·OX 0%, 답 바꿔치기 74%·25%, 실제 엉뚱한 제출 33%·24%를 잡음)
+# 같은 요청에서 문제 글이 깨졌는지도 본다 (0.3 기준: 족보 정상 문제 210개 중 의심 0개, '계임해벨 조회수…' 같은 깨진 글은 잡음)
+# 키: 환경변수 QH_TYPESAFE_KEY 또는 %APPDATA%\QuizHelper	ypesafe_key.txt. 없거나 실패하면 점검 없이 예전처럼 합친다.
+ANSWER_CHECK_MIN = 0.3
+TYPESAFE_KEY_FILE = os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'typesafe_key.txt')
+
+
+def answer_pair_check(pairs):
+    """[(cat, q, a)] → [(답이 맞을 확률, 문제 글이 온전할 확률) 또는 None(점검 못 함)]"""
+    if not pairs:
+        return []
+    key = os.environ.get('QH_TYPESAFE_KEY', '').strip()
+    if not key and os.path.exists(TYPESAFE_KEY_FILE):
+        key = open(TYPESAFE_KEY_FILE, encoding='utf-8').read().strip()
+    if not key:
+        log('답 짝 점검: TypeSafe 키가 없어 건너뜀')
+        return [None] * len(pairs)
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(pair):
+        cat, q, a = pair
+        if q.startswith('(가려진 문제)'):
+            return None  # 문제 글 없이 보기만 있는 형식: 서버가 답이 보기 중에 있는지 이미 확인함
+        instr = ('`quiz.question`은 퀴즈의 OX 진술이고 `quiz.answer`는 그 정답(O=맞다, X=틀리다)으로 적힌 것이다. 이 정답 표시가 올바른가'
+                 if cat == 'ox_xo' else '`quiz.answer`가 `quiz.question`이 묻는 것에 대한 올바른 정답인가')
+        body = {'model': 'jev-latest', 'state': {'quiz': {'question': q, 'answer': answer_core(a)}},
+                'questions': {
+                    'ok': {'type': 'noul', 'instructions': instr, 'criteria': {
+                        'true': '정답이 질문이 묻는 것에 맞다 (띄어쓰기·표기가 조금 달라도 맞으면 참)',
+                        'false': '정답이 질문과 관계없거나, 틀렸거나, 깨진 글자·잘린 글자·화면 잡음이 섞여 있다'}},
+                    # 문제 글이 깨졌는지 (같은 요청이라 시간·비용이 거의 안 늘어남)
+                    'clean': {'type': 'noul', 'instructions': '`quiz.question`이 깨진 글자 없이 온전히 읽히는 퀴즈 문제 글인가', 'criteria': {
+                        'true': '뜻이 통하는 질문이나 진술이다 (띄어쓰기가 붙어 있거나 끝이 조금 잘려도 뜻이 통하면 참)',
+                        'false': '뜻 모를 글자·기호가 섞였거나, 게임 화면 메뉴·닉네임·채팅이 섞였거나, 문제 글이 아니다'}}}}
+        req = urllib.request.Request('https://api.typesafe.ai/v1/systemone',
+                                     data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
+                                     headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json',
+                                              'User-Agent': 'qplay-merge-routine'})
+        for _ in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    ans = json.loads(r.read().decode('utf-8'))['answers']
+                    return float(ans['ok']['noul']), float(ans['clean']['noul'])
+            except Exception:
+                continue
+        return None
+
+    with ThreadPoolExecutor(8) as ex:
+        probs = list(ex.map(one, pairs))
+    failed = sum(p is None and not pr[1].startswith('(가려진 문제)') for p, pr in zip(probs, pairs))
+    flagged = sum(p is not None and min(p) < ANSWER_CHECK_MIN for p in probs)
+    log(f'답 짝 점검: {len(pairs)}개 중 {flagged}개 검토로' + (f', {failed}개는 점검 실패(그냥 합침)' if failed else ''))
+    return probs
 
 
 # ===== 반영 =====
@@ -812,22 +874,33 @@ def main():
     merged_entries = []
     today = dt.date.today().isoformat()
 
+    candidates = []  # 글자 점검은 통과한 항목 → 아래에서 '답이 문제와 맞는 짝인가'를 한 번 더 본다
     for it in fresh:
         state_key = f"{it['cat']}|{qkey(it['q'])}|{akey(it['a'])}"
         verdict = judge(it, banks[it['cat']], batch_keys)
         if verdict[0] == 'merge':
             _, q, a, note = verdict
-            to_merge[it['cat']].append((q, a))
-            merged_entries.append({'date': today, 'cat': it['cat'], 'q': q, 'a': a, 'src': it['src'], 'note': note})
+            candidates.append((it, state_key, q, a, note))
             batch_keys.add((qkey(q), qkey(a)))
-            log(f"  + [{it['cat']}] {q[:50]} → {a}" + (f'  ({note})' if note else ''))
-            done_keys.add(state_key)
         elif verdict[0] == 'review':
             reviews.append((it, verdict[1]))
             log(f"  ? [{it['cat']}] {it['q'][:50]} → {it['a']}  ({verdict[1]})")
             done_keys.add(state_key)  # 검토 파일로 넘겼으니 다시 처리하지 않음
         else:
             done_keys.add(state_key)
+
+    probs = answer_pair_check([(it['cat'], q, a) for it, _, q, a, _ in candidates])
+    for (it, state_key, q, a, note), p in zip(candidates, probs):
+        if p is not None and min(p) < ANSWER_CHECK_MIN:
+            why = (f'문제 글이 깨져 보임 (Jev {round(p[1] * 100)}%)' if p[1] < ANSWER_CHECK_MIN
+                   else f'답이 문제와 안 맞아 보임 (Jev {round(p[0] * 100)}%)')
+            reviews.append((it, why))
+            log(f"  ? [{it['cat']}] {q[:50]} → {a}  ({why})")
+        else:
+            to_merge[it['cat']].append((q, a))
+            merged_entries.append({'date': today, 'cat': it['cat'], 'q': q, 'a': a, 'src': it['src'], 'note': note})
+            log(f"  + [{it['cat']}] {q[:50]} → {a}" + (f'  ({note})' if note else ''))
+        done_keys.add(state_key)
 
     # 1명만 보낸 채 오래 기다린 공유 항목은 검토로
     for it in remote_stale:
