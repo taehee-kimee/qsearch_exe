@@ -422,6 +422,52 @@ class Bank:
         return answer, False
 
 
+def similar_question(k1, k2, fuzzy=True):
+    """같은 답을 가진 두 질문(qkey)이 사실상 같은 문제인가.
+
+    같은 문제가 부스러기 붙은 판("1 영화 미니언즈는…"), 보기가 뒤에 붙은 판, 한두 글자 잘못 읽힌 판으로
+    2~4번씩 들어오던 것을 막는다 (2026-11-17 전수 검수에서 삭제 377줄의 대부분이 이런 중복).
+    """
+    if k1 == k2:
+        return True
+    short, long_ = (k1, k2) if len(k1) <= len(k2) else (k2, k1)
+    if len(short) >= 8 and short in long_:
+        return True
+    if not fuzzy or len(short) < 6 or len(short) < len(long_) * 0.7:
+        return False
+    return jamo_ratio(k1, k2) >= SIMILAR_QUESTION_MIN
+
+
+def cut_after_question_mark(q):
+    """물음표 뒤에 붙어 온 보기·되풀이 조각을 뗀다 ("…두 강은? . 대동강과임진강", "…학설은? 는학설은?").
+
+    게임 화면의 과몰입 안내문이 앞에 붙은 것도 뗀다. 영어 빈칸 문제("빈칸에 알맞은 말은? I want ___ a doctor.")와
+    괄호 덧말("…기본 세율은? (지방소득세 제외)")은 물음표 뒤가 문제의 일부라 그대로 둔다.
+    """
+    q = re.sub(r'^.*지장을\s*줄\s*수\s*있습니다\s*[.,]?\s*', '', q)
+    m = re.match(r'^(.*?[?？])\s*(\S.*)$', q)
+    if m and len(qkey(m.group(1))) >= 8 and '빈칸' not in m.group(1) and '_' not in m.group(2)             and not re.match(r'[A-Za-z(]', m.group(2)):
+        return m.group(1)
+    return q
+
+
+OPENERS = {"'": "'", '"': '"', '‘': '’', '“': '”', '(': ')', '<': '>', '《': '》', '〈': '〉', '「': '」', '『': '』', '[': ']'}
+
+
+def leading_junk(q):
+    """질문 앞에 화면 부스러기가 붙었는가 ("1 영화 미니언즈는…", "6 : 런던의…", "『6 바르셀로나의…", ". 뮤지컬…")."""
+    if re.match(r'^\d{1,2}\s+\S', q):
+        return True
+    first = q[0]
+    if re.match(r'\.[A-Za-z]', q):   # ".txt 확장자를 가진…"
+        return False
+    if re.match(r'[0-9A-Za-z가-힣_]', first):
+        return False
+    if first in OPENERS:
+        return OPENERS[first] not in q[1:]
+    return not ('一' <= first <= '鿿')   # 한자로 시작하는 문제는 정상
+
+
 def judge(item, bank, batch_keys):
     """('merge', 질문, 답, 메모) | ('review', 사유) | ('skip', 사유)"""
     q, a, cat = item['q'], item['a'], item['cat']
@@ -444,6 +490,10 @@ def judge(item, bank, batch_keys):
         return ('review', '답에 깨진 글자')
 
     hidden = q.startswith('(가려진 문제)')
+    if not hidden:
+        q = cut_after_question_mark(q)
+        if leading_junk(q):
+            return ('review', '질문 앞에 화면 부스러기')
     if not hidden and garbage_ratio(q) >= 0.05:
         return ('review', '질문에 깨진 글자 (OCR 잡음)')
     if not hidden and OVERLAY_RE.search(q):
@@ -465,6 +515,10 @@ def judge(item, bank, batch_keys):
         return ('review', f'같은 질문의 족보 답이 다름: {existing[0]}')
     if (k_q, k_a) in batch_keys:
         return ('skip', '이번 묶음에서 중복')
+    fuzzy = cat != 'ox_xo'   # OX는 답이 O/X뿐이라 비슷한 문장이 다른 문제일 수 있다 ("…5개" / "…9개")
+    if not hidden and (any(similar_question(k_q, other, fuzzy) for other in bank.questions_by_answer.get(k_a, []))
+                       or any(ak == k_a and similar_question(k_q, qk, fuzzy) for qk, ak in batch_keys)):
+        return ('skip', '비슷한 문제가 이미 있음')
     if len(qkey(fixed)) <= 2 and qkey(fixed) not in bank.answers and cat != 'ox_xo':
         return ('review', '두 글자 이하 새 답 (OCR 오인식 확인 필요)')
 
@@ -479,6 +533,7 @@ def judge(item, bank, batch_keys):
 # 같은 요청에서 문제 글이 깨졌는지도 본다 (0.3 기준: 족보 정상 문제 210개 중 의심 0개, '계임해벨 조회수…' 같은 깨진 글은 잡음)
 # 키: 환경변수 QH_TYPESAFE_KEY 또는 %APPDATA%\QuizHelper	ypesafe_key.txt. 없거나 실패하면 점검 없이 예전처럼 합친다.
 ANSWER_CHECK_MIN = 0.3
+SIMILAR_QUESTION_MIN = 85   # 같은 답 + 질문 자모 유사도가 이 이상이면 같은 문제로 본다
 TYPESAFE_KEY_FILE = os.path.join(os.environ.get('APPDATA', HOME), 'QuizHelper', 'typesafe_key.txt')
 
 
