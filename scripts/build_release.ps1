@@ -39,6 +39,14 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# The standard app must never ship the AI edition's code (that one is a separate app,
+# built by build_release_ai.ps1). Stop if it somehow got in.
+$dllText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes("$projectDir\publish\QuizHelper.dll"))
+if ($dllText.Contains("AiAskService")) {
+    Write-Host "AI edition code found in the standard build - aborting." -ForegroundColor Red
+    exit 1
+}
+
 # 3. Create Package with Velopack
 Write-Host "3. Creating Velopack release package..." -ForegroundColor Yellow
 

@@ -12,6 +12,16 @@
     <!-- Single source of truth for the app version.
          scripts/build_release.ps1 reads this, and the UI badge shows it at runtime. -->
     <Version>2.0.6</Version>
+    <!-- AI판(그깽족보 AI)의 버전. scripts/build_release_ai.ps1 이 읽는다. -->
+    <AiVersion>1.0.0</AiVersion>
+  </PropertyGroup>
+
+  <!-- AI판: dotnet publish -p:Edition=AI
+       같은 소스에서 AI 코드(#if AI_EDITION)만 더 들어간 별도 앱. 일반판 빌드에는 아무 영향이 없다. -->
+  <PropertyGroup Condition="'$(Edition)'=='AI'">
+    <DefineConstants>$(DefineConstants);AI_EDITION</DefineConstants>
+    <Version>$(AiVersion)</Version>
+    <Product>그깽족보 AI</Product>
   </PropertyGroup>
 
   <!-- Release 빌드 최적화 설정 -->

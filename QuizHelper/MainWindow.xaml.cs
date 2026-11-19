@@ -86,6 +86,10 @@ namespace QuizHelper
             };
             _webRefreshTimer.Start();
 
+#if AI_EDITION
+            InitAi();
+#endif
+
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
         }
@@ -269,6 +273,9 @@ namespace QuizHelper
             AnswerText.Visibility = Visibility.Collapsed;
             AlternativesBorder.Visibility = Visibility.Collapsed;
             AlternativesList.ItemsSource = null;
+#if AI_EDITION
+            AiHide();
+#endif
         }
 
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -446,7 +453,16 @@ namespace QuizHelper
 
         private async void ScanTimer_Tick(object? sender, EventArgs e)
         {
+#if AI_EDITION
+            // AI판은 1초마다 보므로, 앞 스캔이 아직 안 끝났으면 건너뛴다
+            if (_aiScanBusy) return;
+            _aiScanBusy = true;
+            AiAskService.KeepWarm(); // AI 서버 연결을 미리 열어 둔다 (족보에 없는 문제가 나왔을 때 첫 답이 늦지 않게)
+            try { await PerformScanAsync(); }
+            finally { _aiScanBusy = false; }
+#else
             await PerformScanAsync();
+#endif
         }
 
         private async Task PerformScanAsync()
@@ -490,7 +506,11 @@ namespace QuizHelper
 
                 // Perform OCR
                 string ocrText = await _ocrService.RecognizeTextAsync(bitmap);
+#if AI_EDITION
+                AiKeepCapture(bitmap); // 사진 질문용으로 보관 (다음 캡처 때 정리)
+#else
                 bitmap.Dispose();
+#endif
 
                 // Skip if text hasn't changed (de-duplication)
                 if (string.Equals(ocrText.Trim(), _lastOcrText.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -558,6 +578,9 @@ namespace QuizHelper
                         Dispatcher.Invoke(() =>
                         {
                             // OCR 텍스트가 변경되지 않았을 때만 업데이트
+#if AI_EDITION
+                            if (_aiBorder.Visibility == Visibility.Visible) return; // AI 칸이 떠 있으면 후보는 붙이지 않는다
+#endif
                             if (_lastOcrText == capturedOcrText && results.HasAlternatives)
                             {
                                 // 중복 답 제거: 1등과 같은 답은 제외
@@ -574,6 +597,10 @@ namespace QuizHelper
                             }
                         });
                     });
+#if AI_EDITION
+                    // 족보에 답이 있으면 AI 칸은 치운다. 단 족보 답이 화면 보기에 없으면(비슷하지만 다른 문제) AI에게 묻는다
+                    if (!AiOnJokboMatch(ocrText, bestMatch)) AiCancel();
+#endif
                 }
                 else
                 {
@@ -581,6 +608,9 @@ namespace QuizHelper
                     ResultText.Text = $"매칭되는 답을 찾지 못했습니다.\n\n감지된 텍스트: \"{TruncateText(ocrText, 80)}\"";
                     ResultText.Visibility = Visibility.Visible;
                     StatusText.Text = "상태: 스캔 중...";
+#if AI_EDITION
+                    AiOnNoMatch(ocrText); // 문제 화면이면 AI에게 물어 '🤖 AI 추정' 칸에 표시
+#endif
                 }
 
                 // 족보에 없던 문제 수집 (문제 화면 기억 → 정답 화면에서 답 확정)

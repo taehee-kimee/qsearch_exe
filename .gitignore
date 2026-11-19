@@ -5,7 +5,10 @@ data/backup/
 bin/
 obj/
 publish/
+publish_ai/
 Releases/
+Releases_AI/
+__pycache__/
 QuizHelper/Releases/
 temp_extract/
 *.nupkg

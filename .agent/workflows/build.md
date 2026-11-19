@@ -66,3 +66,17 @@ vpk pack --packId QuizHelper --packVersion 1.0.6 --packDir QuizHelper/publish --
 2. `QuizHelper/bin/`, `QuizHelper/obj/`, `QuizHelper/publish/` 폴더는 임시 파일입니다.
 3. 빌드 전 이전 버전 파일은 덮어쓰기 됩니다.
 4. vpk 명령어가 없으면 `dotnet tool install -g vpk` 로 설치하세요.
+
+---
+
+## AI판 (그깽족보 AI) 빌드
+
+일반판과 같은 소스에서 `-p:Edition=AI`로 빌드하는 **별도 앱**입니다 (패키지 ID `QuizHelperAI`, 설치 폴더·업데이트 따로).
+AI 코드는 `#if AI_EDITION` 안에만 있어서 일반판 빌드에는 들어가지 않습니다.
+
+- 버전: `QuizHelper.csproj`의 `<AiVersion>`
+- 빌드: `powershell -ExecutionPolicy Bypass -File scripts/build_release_ai.ps1` → `Releases_AI\`
+- 업로드: **qsearch_exe 저장소**에 올립니다 (일반판은 qplay_search). AI판은 qsearch_exe 릴리스에서 `QuizHelperAI` 패키지만 골라 업데이트합니다.
+  ```powershell
+  gh release create ai-v<버전> -R taehee-kimee/qsearch_exe --title "그깽족보 AI v<버전>" Releases_AI/*
+  ```

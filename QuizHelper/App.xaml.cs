@@ -20,7 +20,14 @@ namespace QuizHelper
                 // 첫 번째 인자: 리포지토리 URL
                 // 두 번째 인자: 액세스 토큰 (공개 리포지토리라면 null)
                 // 세 번째 인자: prerelease 포함 여부 (false = 정식 버전만)
+#if AI_EDITION
+                // AI판은 일반판과 다른 저장소에서 업데이트를 받는다 (일반판 사용자에게는 보이지 않음).
+                // 그 저장소에 다른 앱(일반판) 패키지가 섞여 있어도 AI판 패키지만 본다 — 안 거르면 버전 숫자가 더 큰
+                // 일반판 패키지를 '새 버전'으로 알고 AI판이 일반판으로 바뀌어 버린다 (2026-11-20 실제로 확인).
+                var source = new AiOnlySource(new Velopack.Sources.GithubSource("https://github.com/taehee-kimee/qsearch_exe", null, false));
+#else
                 var source = new Velopack.Sources.GithubSource("https://github.com/taehee-kimee/qplay_search", null, false);
+#endif
                 var mgr = new Velopack.UpdateManager(source);
 
                 // 새 버전 확인
@@ -51,5 +58,33 @@ namespace QuizHelper
                 System.Diagnostics.Debug.WriteLine($"Update check failed: {ex.Message}");
             }
         }
+
+#if AI_EDITION
+        /// <summary>업데이트 목록에서 AI판(패키지 ID QuizHelperAI) 패키지만 남기는 소스</summary>
+        private sealed class AiOnlySource : Velopack.Sources.IUpdateSource
+        {
+            private const string PackageId = "QuizHelperAI";
+            private readonly Velopack.Sources.IUpdateSource _inner;
+
+            public AiOnlySource(Velopack.Sources.IUpdateSource inner) { _inner = inner; }
+
+            public async System.Threading.Tasks.Task<Velopack.VelopackAssetFeed> GetReleaseFeed(
+                Microsoft.Extensions.Logging.ILogger logger, string channel, System.Guid? stagingId = null, Velopack.VelopackAsset? latestLocalRelease = null)
+            {
+                var feed = await _inner.GetReleaseFeed(logger, channel, stagingId, latestLocalRelease);
+                var mine = new System.Collections.Generic.List<Velopack.VelopackAsset>();
+                foreach (var asset in feed.Assets)
+                {
+                    if (string.Equals(asset.PackageId, PackageId, System.StringComparison.OrdinalIgnoreCase)) mine.Add(asset);
+                }
+                return new Velopack.VelopackAssetFeed { Assets = mine.ToArray() };
+            }
+
+            public System.Threading.Tasks.Task DownloadReleaseEntry(
+                Microsoft.Extensions.Logging.ILogger logger, Velopack.VelopackAsset releaseEntry, string localFile,
+                System.Action<int> progress, System.Threading.CancellationToken cancelToken = default)
+                => _inner.DownloadReleaseEntry(logger, releaseEntry, localFile, progress, cancelToken);
+        }
+#endif
     }
 }
