@@ -1,11 +1,11 @@
-# Build and Release Script for the AI edition ("그깽족보 AI")
+# Build and Release Script for the AI edition (Geukkaeng Jokbo AI)
 #
 # Same source as the standard app, built with -p:Edition=AI (adds the #if AI_EDITION code).
 # It is a separate app: package id QuizHelperAI, its own install folder, shortcut and update feed.
 # Output goes to Releases_AI\ so the standard Releases\ folder is never touched.
 #
 # Upload (the AI app updates itself from the qsearch_exe repo, NOT qplay_search):
-#   gh release create ai-v<version> -R taehee-kimee/qsearch_exe --title "그깽족보 AI v<version>" Releases_AI/*
+#   gh release create ai-v<version> -R taehee-kimee/qsearch_exe --title "<Korean app name> AI v<version>" Releases_AI/*
 
 $scriptDir = $PSScriptRoot
 $projectDir = Join-Path $scriptDir "..\QuizHelper"
@@ -60,7 +60,11 @@ if (-not (Get-Command vpk -ErrorAction SilentlyContinue)) {
     dotnet tool install -g vpk
 }
 
-vpk pack -u "QuizHelperAI" -v $version -p $publishDir -o $releaseDir --mainExe "QuizHelper.exe" --packTitle "그깽족보 AI" --icon "$projectDir\icon.ico"
+# The Korean title is built from character codes on purpose: Windows PowerShell 5.1 reads a
+# BOM-less script as ANSI, which turned a literal Korean title into mojibake in the shortcut
+# and app names (v1.0.0, first upload).
+$title = (-join [char[]](0xADF8, 0xAE7D, 0xC871, 0xBCF4)) + " AI"
+vpk pack -u "QuizHelperAI" -v $version -p $publishDir -o $releaseDir --mainExe "QuizHelper.exe" --packTitle $title --icon "$projectDir\icon.ico"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Packaging failed!" -ForegroundColor Red
