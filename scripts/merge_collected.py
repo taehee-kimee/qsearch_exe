@@ -491,7 +491,9 @@ def judge(item, bank, batch_keys):
 
     hidden = q.startswith('(가려진 문제)')
     if not hidden:
-        q = cut_after_question_mark(q)
+        q = cut_after_question_mark(q).strip()
+        if not q:   # 과몰입 안내문만 잡힌 항목 (안내문을 떼고 나면 남는 글자가 없음)
+            return ('skip', '안내문만 있고 질문이 없음')
         if leading_junk(q):
             return ('review', '질문 앞에 화면 부스러기')
     if not hidden and garbage_ratio(q) >= 0.05:
