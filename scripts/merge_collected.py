@@ -445,6 +445,8 @@ def cut_after_question_mark(q):
     괄호 덧말("…기본 세율은? (지방소득세 제외)")은 물음표 뒤가 문제의 일부라 그대로 둔다.
     """
     q = re.sub(r'^.*지장을\s*줄\s*수\s*있습니다\s*[.,]?\s*', '', q)
+    # 문제 위에 뜨는 "- 매크로 방지 문제" 표시가 질문 앞에 붙어 온 것 ("기 - 매크로 방지 문제 전기를 저장하는 부품은?")
+    q = re.sub(r'^.{0,6}?매크로\s*방지\s*문제\s*', '', q)
     m = re.match(r'^(.*?[?？])\s*(\S.*)$', q)
     if m and len(qkey(m.group(1))) >= 8 and '빈칸' not in m.group(1) and '_' not in m.group(2)             and not re.match(r'[A-Za-z(]', m.group(2)):
         return m.group(1)
